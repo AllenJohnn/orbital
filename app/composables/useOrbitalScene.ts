@@ -181,12 +181,13 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     }
     
     if (planetController) {
-      // Add subtle cinematic tilt/reveal to the planet
+      // Add subtle cinematic tilt/reveal to the planet group itself
+      // (This is independent of the axial tilt of the surface mesh)
       if (planetController.planetGroup) {
         planetController.planetGroup.rotation.y = THREE.MathUtils.lerp(0, Math.PI / 6, easeProgress)
         planetController.planetGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI / 24, easeProgress)
       }
-      planetController.update(time)
+      planetController.update(time, p)
     }
 
     if (composer) {
@@ -221,6 +222,7 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     get scene() { return scene }, 
     get camera() { return camera }, 
     get starParticles() { return starParticles },
-    get planetGroup() { return planetController?.planetGroup }
+    get planetGroup() { return planetController?.planetGroup },
+    get surfaceRotation() { return planetController?.surfaceRotation ?? 0 }
   }
 }

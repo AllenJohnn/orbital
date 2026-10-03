@@ -27,6 +27,14 @@ export const usePlanet = (scene: THREE.Scene) => {
   const surface = new THREE.Mesh(geometry, surfaceMaterial)
   planetGroup.add(surface)
   
+  // Create a separate group for rotation so we can apply axial tilt
+  const planetRotationGroup = new THREE.Group()
+  // Axial tilt of 15 degrees
+  planetRotationGroup.rotation.x = 15 * (Math.PI / 180)
+  planetRotationGroup.rotation.z = -5 * (Math.PI / 180) // Slight Z tilt
+  
+  planetRotationGroup.add(surface)
+  
   // 2. Atmosphere
   const atmosphereRadius = radius * 1.15
   const atmosphereGeometry = new THREE.SphereGeometry(atmosphereRadius, widthSegments, heightSegments)
@@ -35,16 +43,16 @@ export const usePlanet = (scene: THREE.Scene) => {
     fragmentShader: atmosphereFragmentShader,
     uniforms: {
       uSunDirection: { value: sunDirection },
-      uAtmosphereColor: { value: new THREE.Color(0x6a9dff) } // Softer pale blue
+      uAtmosphereColor: { value: new THREE.Color(0x6a9dff) } 
     },
     transparent: true,
     blending: THREE.AdditiveBlending,
-    side: THREE.BackSide, // Render on the back side for a rim effect around the planet
+    side: THREE.BackSide, 
     depthWrite: false
   })
   
   const atmosphere = new THREE.Mesh(atmosphereGeometry, atmosphereMaterial)
-  planetGroup.add(atmosphere)
+  planetGroup.add(atmosphere) // Atmosphere does not need axial tilt
   
   // 3. Clouds
   const cloudRadius = radius * 1.02
@@ -61,7 +69,9 @@ export const usePlanet = (scene: THREE.Scene) => {
   })
   
   const clouds = new THREE.Mesh(cloudGeometry, cloudMaterial)
-  planetGroup.add(clouds)
+  planetRotationGroup.add(clouds) // Clouds spin with the planet
+  
+  planetGroup.add(planetRotationGroup)
   
   // 4. Moon
   const moonRadius = radius * 0.15
@@ -75,28 +85,33 @@ export const usePlanet = (scene: THREE.Scene) => {
     }
   })
   const moon = new THREE.Mesh(moonGeometry, moonMaterial)
-  // Place it far out, orbit radius
   const moonOrbitRadius = radius * 3.5
   moon.position.set(moonOrbitRadius, 100, -200)
   
-  // Create a pivot for the moon to orbit the planet
   const moonPivot = new THREE.Group()
   moonPivot.add(moon)
-  // Tilt the orbit slightly
   moonPivot.rotation.z = Math.PI / 12
-  planetGroup.add(moonPivot)
+  planetGroup.add(moonPivot) // Independent from axial tilt
   
   scene.add(planetGroup)
   
-  const update = (time: number) => {
-    surface.rotation.y = time * 0.05
-    clouds.rotation.y = time * 0.07 
-    moon.rotation.y = time * 0.1 
-    moonPivot.rotation.y = time * 0.02 // slow orbit around planet
+  const update = (time: number, progress: number) => {
+    // 1. Deterministic scroll-driven rotation (surface)
+    // 300 degrees total rotation as we approach
+    const targetRotation = progress * (300 * Math.PI / 180)
+    surface.rotation.y = targetRotation
     
-    surfaceMaterial.uniforms.uTime.value = time
+    // Clouds rotate very slightly faster than the surface (e.g. 10% faster)
+    clouds.rotation.y = targetRotation * 1.1 
+    
+    // 2. Independent celestial motion (Moon)
+    moon.rotation.y = time * 0.1 // Moon's own rotation
+    moonPivot.rotation.y = time * 0.015 // Slow, independent orbital motion
+    
+    // Shader uniforms (for fbm noise evolution)
+    surfaceMaterial.uniforms.uTime.value = time * 0.5 // Slow down surface terrain evolution
     cloudMaterial.uniforms.uTime.value = time
-    moonMaterial.uniforms.uTime.value = time * 1.5 // Moon surface changes slightly if procedural
+    moonMaterial.uniforms.uTime.value = time * 1.5
   }
   
   const cleanup = () => {
@@ -114,6 +129,7 @@ export const usePlanet = (scene: THREE.Scene) => {
   return {
     planetGroup,
     update,
-    cleanup
+    cleanup,
+    get surfaceRotation() { return surface.rotation.y }
   }
 }

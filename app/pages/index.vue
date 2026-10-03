@@ -10,6 +10,7 @@
       <div>CAMERA DISTANCE: {{ cameraDistance.toFixed(1) }}</div>
       <div>PLANET RADIUS: 400</div>
       <div>APPARENT DIAMETER: {{ ((800 / cameraDistance) * 100).toFixed(1) }}%</div>
+      <div>PLANET ROTATION: {{ planetRotation.toFixed(1) }}°</div>
       <div>FOV: {{ cameraFov.toFixed(1) }}</div>
     </div>
 
@@ -39,6 +40,7 @@ const scrollProgress = ref(0)
 // For telemetry
 const cameraDistance = ref(6000)
 const cameraFov = ref(45)
+const planetRotation = ref(0)
 const mainContainer = ref<HTMLElement | null>(null)
 
 const { lenis } = useLenis()
@@ -56,6 +58,7 @@ const updateTelemetry = () => {
       cameraDistance.value = cam.position.z // Since planet is at 0, Z is distance
       cameraFov.value = cam.fov
     }
+    planetRotation.value = sceneComponent.value.orbital.surfaceRotation * (180 / Math.PI)
   }
 }
 
@@ -74,6 +77,13 @@ const onScroll = () => {
 }
 
 onMounted(() => {
+  // Handle browser scroll restoration on refresh
+  if (typeof history !== 'undefined' && 'scrollRestoration' in history) {
+    history.scrollRestoration = 'manual'
+  }
+  window.scrollTo(0, 0)
+  scrollProgress.value = 0
+  
   ctx = gsap.context(() => {
     // Initial State (Fade In from Black)
     gsap.from('.intro-content', {
@@ -97,12 +107,6 @@ onMounted(() => {
       ease: 'sine.inOut'
     })
   })
-  // Provide the scrollProgress to the child scene if needed, 
-  // but wait, we can just pass it directly to the orbital instance!
-  if (sceneComponent.value && sceneComponent.value.orbital) {
-    // We already passed it in useOrbitalScene? No, we didn't pass it yet, we just modified the function signature.
-    // Let's make sure the OrbitalScene component passes it.
-  }
 
   if (lenis.value) {
     lenis.value.on('scroll', onScroll)
