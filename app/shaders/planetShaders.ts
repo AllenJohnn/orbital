@@ -138,12 +138,27 @@ float getImpactBasin(vec3 p, float scale, float probability, float depthMult) {
     return elevation;
 }
 
-float getImpactHistory(vec3 p) {
+float getImpactHistory(vec3 p, float distToCam) {
     // 4-Tier Hierarchy: Mega, Large, Medium, Small
     float basins = getImpactBasin(p, 1.2, 0.08, 1.5);    // Mega basins (very rare, huge impact, deep)
-    basins += getImpactBasin(p, 3.5, 0.15, 0.8) * 0.6;   // Large basins
-    basins += getImpactBasin(p, 8.0, 0.25, 0.5) * 0.25;  // Medium craters
-    basins += getImpactBasin(p, 20.0, 0.35, 0.3) * 0.1;  // Small crater fields
+    
+    // Large basins (Fade out from far orbit)
+    if (distToCam < 3000.0) {
+        float fade = smoothstep(3000.0, 1500.0, distToCam);
+        basins += getImpactBasin(p, 3.5, 0.15, 0.8) * 0.6 * fade;
+    }
+    
+    // Medium craters
+    if (distToCam < 1000.0) {
+        float fade = smoothstep(1000.0, 500.0, distToCam);
+        basins += getImpactBasin(p, 8.0, 0.25, 0.5) * 0.25 * fade;
+    }
+    
+    // Small crater fields
+    if (distToCam < 400.0) {
+        float fade = smoothstep(400.0, 100.0, distToCam);
+        basins += getImpactBasin(p, 20.0, 0.35, 0.3) * 0.1 * fade;
+    }
     return basins;
 }
 
@@ -168,22 +183,25 @@ float getElevation(vec3 p, float distToCam) {
       
       float faultLine = 1.0 - smoothstep(0.0, 0.2, boundaryDist); // Wider fault zone
       
-      if (faultType > 0.4) {
+      // DE-CLUTTER: Only 15% of faults generate mountain ranges (was 60%)
+      if (faultType > 0.85) {
           // Convergent: Mountain Range along the tectonic plate
           mountainMask = faultLine * smoothstep(0.1, 0.9, fbm(p * 2.5)); 
           // Fade higher frequencies at distance to prevent aliased noise
           float peakFade = smoothstep(4000.0, 1500.0, distToCam);
           float peaks = ridgedFBM(p * 4.0) * 0.6 + ridgedFBM(p * 8.0) * 0.4 * peakFade;
           tectonicElevation += mountainMask * peaks * 0.4;
-      } else {
-          // Divergent: Rift Valley
+      } else if (faultType < 0.1) {
+          // Divergent: Rift Valley (Only 10% of faults)
           float canyonMask = faultLine * smoothstep(0.2, 0.8, fbm(p * 3.0));
           tectonicElevation -= canyonMask * 0.25;
       }
   }
   
   // 3. IMPACT HISTORY (Macro & Regional)
-  float basins = getImpactHistory(p); // Internal hierarchy naturally handles visual scale
+  // DE-CLUTTER: Limit craters mostly to ancient highlands, keeping oceans and new plains quiet
+  float basinMask = smoothstep(-0.2, 0.6, continents); 
+  float basins = getImpactHistory(p, distToCam) * basinMask;
   
   // Combine Macro & Regional
   float elevation = baseTerrain * 0.35 + 0.4; // Base height mapping
@@ -192,8 +210,10 @@ float getElevation(vec3 p, float distToCam) {
   
   // 4. LOCAL DETAIL (Evaluated only when moderately close)
   if (distToCam < 1500.0) {
-      float localDetailMask = smoothstep(0.4, 0.8, continents) + mountainMask * 0.5;
-      localDetailMask = clamp(localDetailMask, 0.1, 1.0);
+      // DE-CLUTTER: Drop detail to 0.0 on flat plains/continents. Only apply to mountains/highlands.
+      float localDetailMask = smoothstep(0.5, 0.9, continents) + mountainMask;
+      localDetailMask = clamp(localDetailMask, 0.0, 1.0);
+      
       float localDetail = fbm(p * 12.0) * 0.03;
       if (distToCam < 500.0) {
           localDetail += fbm(p * 24.0) * 0.015 * smoothstep(500.0, 100.0, distToCam);
@@ -203,7 +223,9 @@ float getElevation(vec3 p, float distToCam) {
   
   // 5. MICRO DETAIL (Evaluated only at very close atmospheric entry)
   if (distToCam < 100.0) {
-      float microDetail = (snoise(p * 80.0) + snoise(p * 150.0) * 0.5) * 0.003;
+      // Only apply micro detail to land, and scale by mountains
+      float microMask = smoothstep(0.0, 0.2, continents) + mountainMask;
+      float microDetail = (snoise(p * 80.0) + snoise(p * 150.0) * 0.5) * 0.003 * clamp(microMask, 0.0, 1.0);
       elevation += microDetail * smoothstep(100.0, 10.0, distToCam);
   }
   
@@ -213,7 +235,7 @@ float getElevation(vec3 p, float distToCam) {
 // Surface Elevation Function (Handles Water Level & Waves)
 float getSurfaceElevation(vec3 p, float distToCam) {
   float e = getElevation(p, distToCam);
-  float seaLevel = 0.42;
+  float seaLevel = 0.55;
   if (e < seaLevel) {
     // Water surface: low-frequency swell + high-frequency micro ripples
     float swell = snoise(p * 25.0 + uTime * 0.01) * 0.0015;
@@ -278,7 +300,7 @@ void main() {
   // ICE CAPS (Use simple snoise instead of FBM to save instructions)
   float coldMask = smoothstep(0.65, 0.95, abs(localNormal.y) + snoise(localNormal * 3.0) * 0.15);
   
-  float seaLevel = 0.42;
+  float seaLevel = 0.55;
   vec3 albedo = vec3(0.0);
   float isLand = 0.0;
   float specular = 0.0;
@@ -450,43 +472,49 @@ void main() {
   float fresnel = max(1.0 - dot(faceNormal, viewDir), 0.0);
   
   // 1. Core Rim (very tight to the edge)
-  float rim = pow(fresnel, 12.0) * 1.2;
+  float horizonRim = pow(fresnel, 24.0); 
+  // 2. Broader, softer atmospheric falloff
+  float atmosphereHaze = pow(fresnel, 6.0) * 0.25; 
   
-  // 2. Broad Scatter (subtle haze, stronger when inside the atmosphere)
-  float insideFactor = 1.0 - smoothstep(100.0, 600.0, distToCam);
-  float scatter = pow(fresnel, mix(4.0, 1.5, insideFactor)) * mix(0.2, 0.4, insideFactor);
+  // Lighting factors
+  float sunFacing = dot(normal, sunDir);
   
-  float intensity = rim + scatter;
+  // 1. WARM LIMB (Sunrise / Sunset Glaze)
+  // Highly asymmetric, strongly biased toward the sun
+  float warmLimbMask = horizonRim * smoothstep(-0.2, 0.9, sunFacing);
+  float warmHazeMask = atmosphereHaze * smoothstep(0.0, 0.8, sunFacing);
   
-  // Lighting Angles
-  float sunFacing = max(dot(normal, sunDir), 0.0);
-  float terminator = dot(normal, sunDir); // 1.0 at noon, 0.0 at sunset, -1.0 at midnight
+  vec3 warmColor = vec3(1.0, 0.4, 0.1); // Deep amber/orange
+  vec3 goldColor = vec3(1.0, 0.75, 0.3); // Bright gold edge
+  vec3 limbGlowColor = mix(warmColor, goldColor, horizonRim);
   
-  // Separate warm day-side scattering from cool night-side scattering
-  vec3 sunsetColor = vec3(1.0, 0.45, 0.15); // Deep orange/red
-  vec3 dayHaze = vec3(1.0, 0.9, 0.8);       // Warm, transparent haze for direct sun
-  vec3 nightBlue = uAtmosphereColor;        // Deep space blue
+  // 2. COOL ATMOSPHERE (Shadow / Non-Sun Limb)
+  // Exists on the dark side, wrapping slightly into the light
+  float coolLimbMask = horizonRim * smoothstep(0.3, -0.8, sunFacing);
+  float coolHazeMask = atmosphereHaze * smoothstep(0.5, -0.8, sunFacing);
   
-  vec3 scatterColor;
-  if (terminator > 0.1) {
-      // Day side: Sunset orange near terminator fading to subtle warm haze at noon
-      scatterColor = mix(sunsetColor, dayHaze, smoothstep(0.1, 0.8, terminator));
-  } else {
-      // Night side: Deep blue fading to sunset orange at the terminator
-      scatterColor = mix(nightBlue, sunsetColor, smoothstep(-0.4, 0.1, terminator));
-  }
+  vec3 coolColor = uAtmosphereColor; // Deep space blue
   
-  // Reduce additive glow intensity on the direct day side so the terrain's physical warmth is not washed out
-  float dayOpacity = mix(1.0, 0.2, smoothstep(0.2, 1.0, terminator));
-  float dayGlow = intensity * (sunFacing * 1.5 + 0.02) * dayOpacity; 
-  
-  // Eclipse / Forward scattering (Backlight from sun through atmosphere)
+  // 3. COMBINE
+  vec3 finalScatterColor = limbGlowColor * (warmLimbMask * 3.0 + warmHazeMask * 1.5) + 
+                           coolColor * (coolLimbMask * 1.0 + coolHazeMask * 0.8);
+                           
+  // Eclipse forward scatter (when star is behind planet)
   float backscatter = max(dot(viewDir, -sunDir), 0.0);
-  float eclipseGlow = intensity * pow(backscatter, 12.0) * 4.0;
+  float eclipseGlow = horizonRim * pow(backscatter, 16.0) * 5.0;
+  finalScatterColor += vec3(1.0, 0.6, 0.2) * eclipseGlow;
   
-  float atmosphereGlow = dayGlow + eclipseGlow;
+  // Star bloom/glare across the horizon
+  // When the camera is looking near the sun over the horizon, boost the glow significantly
+  float starGlare = pow(max(dot(reflect(-viewDir, normal), sunDir), 0.0), 30.0) * horizonRim;
+  finalScatterColor += vec3(1.0, 0.85, 0.7) * starGlare * 4.0;
   
-  gl_FragColor = vec4(scatterColor, atmosphereGlow);
+  // Modulate intensity slightly based on camera distance (thicker atmosphere when far away)
+  float distFactor = smoothstep(150.0, 2000.0, distToCam);
+  finalScatterColor *= mix(0.5, 1.0, distFactor);
+  
+  // Output additive RGB
+  gl_FragColor = vec4(finalScatterColor, 1.0);
 }
 `
 
