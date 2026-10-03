@@ -178,41 +178,47 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     if (composer) composer.setSize(window.innerWidth, window.innerHeight)
   }
 
+  // --- SHARED VECTORS FOR ANIMATE LOOP (Avoid GC pressure) ---
+  const _basePos = new THREE.Vector3()
+  const _sunDir = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
+  const _shadowDir = _sunDir.clone().negate()
+  const _startDir = new THREE.Vector3(0, 0, 1)
+  const _rotationAxis = new THREE.Vector3().crossVectors(_startDir, _shadowDir).normalize()
+  const _totalOrbitAngle = _startDir.angleTo(_shadowDir)
+  const _finalPos = new THREE.Vector3()
+  const _camToSun = _sunDir.clone()
+  const _camToPlanet = new THREE.Vector3()
+  const _lookCenter = new THREE.Vector3(0, 0, 0)
+  const _up = new THREE.Vector3()
+  const _forward = new THREE.Vector3()
+  const _lookHorizon = new THREE.Vector3()
+  const _finalLookAt = new THREE.Vector3()
+  const _cameraForward = new THREE.Vector3()
+
   const animate = () => {
     animationFrameId = requestAnimationFrame(animate)
     const time = performance.now() * 0.001
     const p = scrollProgress.value
 
-    // 1. Scene State Update from Scroll Progress
     const startZ = 6000
-    const endZ = 404 // 4 units above the surface (low altitude hovering)
+    const endZ = 404
     
-    // Apply a subtle ease to the raw progress so the very beginning and very end have soft tangents
     const easeProgress = p < 0.5 
       ? 2 * p * p 
       : 1 - Math.pow(-2 * p + 2, 2) / 2
 
-    // distance = start * (end/start)^progress
     const currentZ = startZ * Math.pow(endZ / startZ, easeProgress)
     
-    // 1. Base position (straight on)
-    const basePos = new THREE.Vector3(
+    _basePos.set(
       THREE.MathUtils.lerp(0, 40, easeProgress),
       THREE.MathUtils.lerp(0, -15, easeProgress),
       currentZ
     )
     
-    // 2. Eclipse trajectory
-    // We want to orbit from basePos around the origin to the shadow line
-    const sunDir = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
-    const shadowDir = sunDir.clone().negate()
-    
-    // Start orbiting significantly after p=0.5. p=0.88 is peak eclipse (camera aligns with shadowDir)
     let orbitFactor = 0
     if (p > 0.5) {
       orbitFactor = THREE.MathUtils.smoothstep(p, 0.5, 0.88)
     }
-    // Overshoot after 0.88 so the star re-emerges
     let eclipseAngleProgress = 0
     if (p <= 0.88) {
       eclipseAngleProgress = orbitFactor
@@ -221,78 +227,78 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
       eclipseAngleProgress = 1.0 + postP * 0.2 
     }
 
-    const startDir = new THREE.Vector3(0, 0, 1)
-    const rotationAxis = new THREE.Vector3().crossVectors(startDir, shadowDir).normalize()
-    const totalOrbitAngle = startDir.angleTo(shadowDir)
-    const currentOrbitAngle = eclipseAngleProgress * totalOrbitAngle
+    const currentOrbitAngle = eclipseAngleProgress * _totalOrbitAngle
     
-    const finalPos = basePos.clone().applyAxisAngle(rotationAxis, currentOrbitAngle)
+    _finalPos.copy(_basePos).applyAxisAngle(_rotationAxis, currentOrbitAngle)
     
-    // Calculate actual geometric eclipse factor
-    const camToSun = sunDir.clone() // Sun is at infinity in sunDir
-    const camToPlanet = new THREE.Vector3(0,0,0).sub(finalPos).normalize()
-    const angleToSun = camToSun.angleTo(camToPlanet)
+    _camToPlanet.set(0,0,0).sub(_finalPos).normalize()
+    const angleToSun = _camToSun.angleTo(_camToPlanet)
     
-    // Safe angular radius (clamps length to avoid NaN if we somehow go inside the planet)
-    const safeLen = Math.max(finalPos.length(), 400.1)
+    const safeLen = Math.max(_finalPos.length(), 400.1)
     const planetAngularRadius = Math.asin(400 / safeLen)
     
-    // Smooth geometric occlusion:
-    // 1.0 when sun is well behind the planet
-    // 0.0 when sun is outside the planet's halo
     const eclipseFactor = 1.0 - THREE.MathUtils.clamp(
       (angleToSun - planetAngularRadius * 0.6) / (planetAngularRadius * 0.6), 
       0, 1
     )
 
     if (camera) {
-      camera.position.copy(finalPos)
+      camera.position.copy(_finalPos)
       
-      // Surface approach camera pitch transition
-      // We want to look at the center from orbit, but look toward the horizon at low altitude
       const surfaceApproachProgress = THREE.MathUtils.clamp((p - 0.75) / 0.25, 0, 1)
-      const lookCenter = new THREE.Vector3(0, 0, 0)
       
-      // Calculate a horizon target
-      const up = finalPos.clone().normalize()
-      // Create a forward vector that is perpendicular to 'up', pointing along our orbital path
-      const forward = new THREE.Vector3().crossVectors(up, rotationAxis).normalize()
-      // Look far ahead and slightly down
-      const lookHorizon = finalPos.clone().add(forward.multiplyScalar(1000)).sub(up.multiplyScalar(80))
+      _up.copy(_finalPos).normalize()
+      _forward.crossVectors(_up, _rotationAxis).normalize()
+      _lookHorizon.copy(_finalPos).add(_forward.multiplyScalar(1000)).sub(_up.multiplyScalar(80))
       
-      // Ease heavily at the very end
       const lookEase = Math.pow(surfaceApproachProgress, 4.0)
-      const finalLookAt = lookCenter.clone().lerp(lookHorizon, lookEase * 0.95)
+      _finalLookAt.copy(_lookCenter).lerp(_lookHorizon, lookEase * 0.95)
       
-      camera.lookAt(finalLookAt)
+      camera.lookAt(_finalLookAt)
       
       // Cinematic banking
       camera.rotation.z += THREE.MathUtils.lerp(0, 0.05, easeProgress)
       
-      // Dynamic FOV (wider as we get closer to emphasize scale)
+      // Dynamic FOV
       const newFov = THREE.MathUtils.lerp(45, 80, easeProgress)
       if (Math.abs(camera.fov - newFov) > 0.1) {
         camera.fov = newFov
         camera.updateProjectionMatrix()
       }
-    }
-    
-    // Dynamically adjust bloom based on eclipse factor (less bloom when occluded)
-    if (bloomPass) {
-      bloomPass.strength = THREE.MathUtils.lerp(0.15, 0.02, eclipseFactor)
+      
+      // --- CINEMATIC SOLAR GLARE ---
+      camera.getWorldDirection(_cameraForward)
+      const starAlignment = Math.max(0.0, _cameraForward.dot(_sunDir))
+      
+      // Exponential alignment curve so it only washes out when staring near the sun
+      const glareIntensity = Math.pow(starAlignment, 12.0)
+      const extremeGlare = Math.pow(starAlignment, 32.0)
+      
+      // Occlusion masks the glare if the star is behind the planet
+      const occlusionMask = 1.0 - eclipseFactor
+      const activeGlare = (glareIntensity * 0.8 + extremeGlare * 2.0) * occlusionMask
+      
+      // Wash out exposure subtly
+      renderer.toneMappingExposure = 1.0 + (activeGlare * 0.7)
+      
+      // Overpower the bloom to mimic a flooded camera sensor
+      if (bloomPass) {
+        // Base bloom is stronger in dark, replaced by glare when facing sun
+        const baseStrength = THREE.MathUtils.lerp(0.15, 0.02, eclipseFactor)
+        bloomPass.strength = baseStrength + (glareIntensity * 0.5 * occlusionMask)
+        bloomPass.radius = 0.8 + (glareIntensity * 0.6 * occlusionMask)
+      }
     }
 
     if (starParticles) {
-      // Natural slow drift
       starParticles.rotation.y += 0.0001
       starParticles.rotation.x += 0.00005
       
-      // Stars fade out as we get very close, but reveal dramatically during deep eclipse
       const material = starParticles.material as THREE.ShaderMaterial
       if (material.uniforms) {
         material.uniforms.uTime.value = time
         const baseBrightness = THREE.MathUtils.lerp(1.0, 0.3, Math.pow(p, 4))
-        const eclipseBrightnessBoost = eclipseFactor * 1.5 // Reveal stars during eclipse
+        const eclipseBrightnessBoost = eclipseFactor * 1.5
         const finalBrightness = baseBrightness + eclipseBrightnessBoost
         material.uniforms.uColor.value.setRGB(finalBrightness, finalBrightness, finalBrightness)
       }
@@ -319,6 +325,14 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     
     if (planetController) {
       planetController.cleanup()
+    }
+    
+    if (composer) {
+      composer.renderTarget1.dispose()
+      composer.renderTarget2.dispose()
+      if (bloomPass) {
+        bloomPass.dispose()
+      }
     }
     
     if (renderer && renderer.domElement && containerRef.value) {

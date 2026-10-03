@@ -211,22 +211,32 @@ float getElevation(vec3 p, float distToCam) {
   // 4. LOCAL DETAIL (Evaluated only when moderately close)
   if (distToCam < 1500.0) {
       // DE-CLUTTER: Drop detail to 0.0 on flat plains/continents. Only apply to mountains/highlands.
-      float localDetailMask = smoothstep(0.5, 0.9, continents) + mountainMask;
+      float localDetailMask = smoothstep(0.4, 0.9, continents) + mountainMask;
       localDetailMask = clamp(localDetailMask, 0.0, 1.0);
       
-      float localDetail = fbm(p * 12.0) * 0.03;
+      float localDetail = fbm(p * 15.0) * 0.025;
       if (distToCam < 500.0) {
-          localDetail += fbm(p * 24.0) * 0.015 * smoothstep(500.0, 100.0, distToCam);
+          localDetail += ridgedFBM(p * 35.0) * 0.015 * smoothstep(500.0, 100.0, distToCam);
       }
       elevation += localDetail * localDetailMask * smoothstep(1500.0, 300.0, distToCam);
   }
   
   // 5. MICRO DETAIL (Evaluated only at very close atmospheric entry)
-  if (distToCam < 100.0) {
-      // Only apply micro detail to land, and scale by mountains
-      float microMask = smoothstep(0.0, 0.2, continents) + mountainMask;
-      float microDetail = (snoise(p * 80.0) + snoise(p * 150.0) * 0.5) * 0.003 * clamp(microMask, 0.0, 1.0);
-      elevation += microDetail * smoothstep(100.0, 10.0, distToCam);
+  if (distToCam < 150.0) {
+      float microMask = smoothstep(-0.2, 0.3, continents) + mountainMask;
+      microMask = clamp(microMask, 0.0, 1.0);
+      
+      // High frequency structural noise for close approach (rocks, fine ridges)
+      float microDetail = snoise(p * 150.0) * 0.002;
+      
+      // Ultra-high frequency for extreme close-up (prevents "blobby" look)
+      if (distToCam < 30.0) {
+          float ultraFade = smoothstep(30.0, 2.0, distToCam);
+          microDetail += snoise(p * 450.0) * 0.0008 * ultraFade;
+          microDetail += snoise(p * 900.0) * 0.0003 * ultraFade;
+      }
+      
+      elevation += microDetail * microMask * smoothstep(150.0, 10.0, distToCam);
   }
   
   return elevation;
@@ -240,8 +250,11 @@ float getSurfaceElevation(vec3 p, float distToCam) {
     // Water surface: low-frequency swell + high-frequency micro ripples
     float swell = snoise(p * 25.0 + uTime * 0.01) * 0.0015;
     float ripples = 0.0;
-    if (distToCam < 200.0) {
-       ripples = fbm(p * 150.0 + uTime * 0.03) * 0.0005 * smoothstep(200.0, 30.0, distToCam);
+    if (distToCam < 100.0) {
+       ripples = snoise(p * 250.0 + uTime * 0.03) * 0.0004 * smoothstep(100.0, 10.0, distToCam);
+       if (distToCam < 20.0) {
+           ripples += snoise(p * 600.0 + uTime * 0.05) * 0.00015 * smoothstep(20.0, 2.0, distToCam);
+       }
     }
     return seaLevel + swell + ripples;
   }
@@ -264,8 +277,8 @@ void main() {
   // --------------------------------------------------------
   // GEOLOGICAL BUMP MAPPING (Normal Perturbation)
   // --------------------------------------------------------
-  // Dynamic EPS scales with distance. Close = high res normals, Far = macro normals (anti-aliasing)
-  float eps = mix(0.0005, 0.02, smoothstep(10.0, 3000.0, distToCam)); 
+  // Dynamic EPS scales with distance to capture ultra-fine detail when close, and avoid aliasing when far
+  float eps = mix(0.00005, 0.015, smoothstep(5.0, 2000.0, distToCam)); 
   
   vec3 worldNormal = normalize(vNormalWorld);
   // Construct tangent basis in world space
@@ -281,8 +294,8 @@ void main() {
   float e1 = getSurfaceElevation(normalize(localNormal + lt1 * eps), distToCam);
   float e2 = getSurfaceElevation(normalize(localNormal + lt2 * eps), distToCam);
   
-  // Bump strength slightly reduces at distance to prevent harsh terminator shadows on a planetary scale
-  float bumpStrength = mix(5.0, 1.5, smoothstep(100.0, 4000.0, distToCam)); 
+  // Bump strength reduces slightly at extreme distance to prevent noisy terminator
+  float bumpStrength = mix(8.0, 1.5, smoothstep(50.0, 4000.0, distToCam)); 
   vec3 finalNormal = normalize(worldNormal - wt1 * (e1 - surfaceElevation) / eps * bumpStrength 
                                            - wt2 * (e2 - surfaceElevation) / eps * bumpStrength);
 
