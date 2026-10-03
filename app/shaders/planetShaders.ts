@@ -175,8 +175,9 @@ float getElevation(vec3 p, float distToCam) {
   float tectonicElevation = 0.0;
   float mountainMask = 0.0;
   
-  // Optimize: Only evaluate complex tectonics and ridged FBM if closer than far orbit
-  if (distToCam < 4000.0) {
+  // Keep broad plate boundaries visible from the opening orbit. Fine peaks fade
+  // in as the camera approaches so the silhouette stays stable at distance.
+  if (distToCam < 6500.0) {
       vec3 tec = voronoiTectonic(p * 1.4 + warp * 0.2);
       float boundaryDist = tec.y - tec.x; 
       float faultType = tec.z;
@@ -187,9 +188,14 @@ float getElevation(vec3 p, float distToCam) {
       if (faultType > 0.85) {
           // Convergent: Mountain Range along the tectonic plate
           mountainMask = faultLine * smoothstep(0.1, 0.9, fbm(p * 2.5)); 
-          // Fade higher frequencies at distance to prevent aliased noise
-          float peakFade = smoothstep(4000.0, 1500.0, distToCam);
-          float peaks = ridgedFBM(p * 4.0) * 0.6 + ridgedFBM(p * 8.0) * 0.4 * peakFade;
+          float peakFade = smoothstep(5800.0, 4000.0, distToCam);
+          float peaks = 0.12;
+          if (distToCam < 5800.0) {
+              peaks = mix(0.12, ridgedFBM(p * 4.0), peakFade);
+              if (distToCam < 4000.0) {
+                  peaks = mix(peaks, ridgedFBM(p * 4.0) * 0.6 + ridgedFBM(p * 8.0) * 0.4, smoothstep(4000.0, 1500.0, distToCam));
+              }
+          }
           tectonicElevation += mountainMask * peaks * 0.4;
       } else if (faultType < 0.1) {
           // Divergent: Rift Valley (Only 10% of faults)
@@ -280,29 +286,32 @@ void main() {
   // --------------------------------------------------------
   // GEOLOGICAL BUMP MAPPING (Normal Perturbation)
   // --------------------------------------------------------
-  // Dynamic EPS scales with distance to capture ultra-fine detail when close, and avoid aliasing when far
-  float eps = mix(0.00005, 0.015, smoothstep(5.0, 2000.0, distToCam)); 
-  
   vec3 worldNormal = normalize(vNormalWorld);
-  // Construct tangent basis in world space
-  vec3 wt1 = normalize(cross(worldNormal, vec3(0.0, 1.0, 0.0)));
-  if (length(wt1) < 0.1) wt1 = normalize(cross(worldNormal, vec3(1.0, 0.0, 0.0)));
-  vec3 wt2 = normalize(cross(worldNormal, wt1));
-  
-  // Sample neighbors in local space to find the gradient
-  vec3 lt1 = normalize(cross(localNormal, vec3(0.0, 1.0, 0.0)));
-  if (length(lt1) < 0.1) lt1 = normalize(cross(localNormal, vec3(1.0, 0.0, 0.0)));
-  vec3 lt2 = normalize(cross(localNormal, lt1));
-  
-  vec3 sample1 = normalize(localNormal + lt1 * eps);
-  vec3 sample2 = normalize(localNormal + lt2 * eps);
-  float e1 = getSurfaceElevationFromTerrain(sample1, getElevation(sample1, distToCam), distToCam);
-  float e2 = getSurfaceElevationFromTerrain(sample2, getElevation(sample2, distToCam), distToCam);
-  
-  // Bump strength reduces slightly at extreme distance to prevent noisy terminator
-  float bumpStrength = mix(8.0, 1.5, smoothstep(50.0, 4000.0, distToCam)); 
-  vec3 finalNormal = normalize(worldNormal - wt1 * (e1 - surfaceElevation) / eps * bumpStrength 
-                                           - wt2 * (e2 - surfaceElevation) / eps * bumpStrength);
+  vec3 finalNormal = worldNormal;
+
+  // A restrained bump response keeps the fully compiled opening view from
+  // reading as a flat color sphere, then gains strength during the approach.
+  if (distToCam < 6200.0) {
+    // Dynamic EPS captures fine detail close up while avoiding noisy distant normals.
+    float eps = mix(0.00005, 0.015, smoothstep(5.0, 2000.0, distToCam));
+
+    vec3 wt1 = normalize(cross(worldNormal, vec3(0.0, 1.0, 0.0)));
+    if (length(wt1) < 0.1) wt1 = normalize(cross(worldNormal, vec3(1.0, 0.0, 0.0)));
+    vec3 wt2 = normalize(cross(worldNormal, wt1));
+
+    vec3 lt1 = normalize(cross(localNormal, vec3(0.0, 1.0, 0.0)));
+    if (length(lt1) < 0.1) lt1 = normalize(cross(localNormal, vec3(1.0, 0.0, 0.0)));
+    vec3 lt2 = normalize(cross(localNormal, lt1));
+
+    vec3 sample1 = normalize(localNormal + lt1 * eps);
+    vec3 sample2 = normalize(localNormal + lt2 * eps);
+    float e1 = getSurfaceElevationFromTerrain(sample1, getElevation(sample1, distToCam), distToCam);
+    float e2 = getSurfaceElevationFromTerrain(sample2, getElevation(sample2, distToCam), distToCam);
+
+    float bumpStrength = mix(8.0, 0.75, smoothstep(50.0, 5000.0, distToCam));
+    finalNormal = normalize(worldNormal - wt1 * (e1 - surfaceElevation) / eps * bumpStrength
+                                         - wt2 * (e2 - surfaceElevation) / eps * bumpStrength);
+  }
 
   // --------------------------------------------------------
   // MACRO BIOME DISTRIBUTION (The Planetary DNA)

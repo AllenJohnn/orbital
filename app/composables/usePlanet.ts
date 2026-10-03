@@ -3,6 +3,9 @@ import { planetVertexShader, planetFragmentShader, atmosphereVertexShader, atmos
 
 export const usePlanet = (scene: THREE.Scene) => {
   const planetGroup = new THREE.Group()
+  const detailGroup = new THREE.Group()
+  detailGroup.visible = false
+  planetGroup.add(detailGroup)
   
   // Place planet at center
   planetGroup.position.set(0, 0, 0)
@@ -14,7 +17,7 @@ export const usePlanet = (scene: THREE.Scene) => {
   const geometry = new THREE.SphereGeometry(radius, widthSegments, heightSegments)
   
   const sunDirection = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
-  
+
   const surfaceMaterial = new THREE.ShaderMaterial({
     vertexShader: planetVertexShader,
     fragmentShader: planetFragmentShader,
@@ -84,7 +87,8 @@ export const usePlanet = (scene: THREE.Scene) => {
   
   planetRotationGroup.add(cloudGroup) // Clouds spin with the planet
   
-  planetGroup.add(planetRotationGroup)
+  detailGroup.add(planetRotationGroup)
+  detailGroup.add(atmosphere)
   
   // 4. Moon
   const moonRadius = radius * 0.15
@@ -104,7 +108,7 @@ export const usePlanet = (scene: THREE.Scene) => {
   const moonPivot = new THREE.Group()
   moonPivot.add(moon)
   moonPivot.rotation.z = Math.PI / 12
-  planetGroup.add(moonPivot) // Independent from axial tilt
+  detailGroup.add(moonPivot) // Independent from axial tilt
   
   scene.add(planetGroup)
   
@@ -127,7 +131,20 @@ export const usePlanet = (scene: THREE.Scene) => {
     cloudMaterial.uniforms.uTime.value = time
     moonMaterial.uniforms.uTime.value = time * 1.5
   }
-  
+
+  const precompileDetails = (renderer: THREE.WebGLRenderer, camera: THREE.Camera) => {
+    detailGroup.visible = true
+    try {
+      return renderer.compileAsync(scene, camera)
+    } finally {
+      detailGroup.visible = false
+    }
+  }
+
+  const setDetailsVisible = (visible: boolean) => {
+    detailGroup.visible = visible
+  }
+
   const cleanup = () => {
     geometry.dispose()
     surfaceMaterial.dispose()
@@ -143,6 +160,8 @@ export const usePlanet = (scene: THREE.Scene) => {
   return {
     planetGroup,
     update,
+    precompileDetails,
+    setDetailsVisible,
     cleanup,
     get surfaceRotation() { return surface.rotation.y }
   }

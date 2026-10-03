@@ -1,5 +1,6 @@
 <template>
-  <div class="fixed inset-0 w-full h-full bg-black z-0" ref="sceneContainer"></div>
+  <div class="orbital-scene fixed inset-0 w-full h-full bg-black z-0" ref="sceneContainer">
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -9,7 +10,6 @@ import { useOrbitalScene } from '~/composables/useOrbitalScene'
 const props = defineProps<{
   scrollProgress: number
 }>()
-
 const sceneContainer = ref<HTMLElement | null>(null)
 const progressRef = toRef(props, 'scrollProgress')
 
@@ -27,3 +27,12 @@ defineExpose({
   orbital
 })
 </script>
+
+<style scoped>
+.orbital-scene :deep(canvas) {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: block;
+}
+</style>
