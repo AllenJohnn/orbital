@@ -18,10 +18,11 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>) => {
     if (!containerRef.value) return
 
     scene = new THREE.Scene()
-    scene.fog = new THREE.FogExp2(0x000000, 0.0003) 
+    scene.fog = new THREE.FogExp2(0x000000, 0.00015) 
 
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000) 
-    camera.position.z = 800
+    // Initial FOV of 45 for deep space
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 25000) 
+    camera.position.z = 6000
 
     renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true }) // antialias usually disabled when using postprocessing unless using FXAA
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -31,9 +32,9 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>) => {
     // Post-processing setup
     const renderScene = new RenderPass(scene, camera)
     const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85)
-    bloomPass.threshold = 0.2
-    bloomPass.strength = 1.2
-    bloomPass.radius = 0.5
+    bloomPass.threshold = 0.5
+    bloomPass.strength = 0.4
+    bloomPass.radius = 0.8
 
     composer = new EffectComposer(renderer)
     composer.addPass(renderScene)
@@ -58,13 +59,14 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>) => {
     const sizes = new Float32Array(actualStarCount)
 
     for (let i = 0; i < actualStarCount; i++) {
-      const r = 3000 * Math.cbrt(Math.random()) + 500
+      const r = 5000 * Math.cbrt(Math.random()) + 500
       const theta = Math.random() * 2 * Math.PI
       const phi = Math.acos(2 * Math.random() - 1)
 
       const x = r * Math.sin(phi) * Math.cos(theta)
       const y = r * Math.sin(phi) * Math.sin(theta)
-      const z = (Math.random() - 0.5) * 6000 
+      // Stars extend deep from Z = 8000 down to Z = -10000
+      const z = (Math.random() - 0.5) * 18000 
 
       positions[i * 3] = x
       positions[i * 3 + 1] = y
