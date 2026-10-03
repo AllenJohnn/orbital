@@ -1,7 +1,16 @@
 <template>
-  <div class="h-[400vh] bg-black">
-    <OrbitalScene ref="sceneComponent" />
+  <div class="h-[800vh] bg-black relative">
+    <OrbitalScene ref="sceneComponent" class="sticky top-0 h-screen w-full" />
     <OrbitalIntro ref="introComponent" />
+    
+    <!-- We can add some UI for Phase 02 -->
+    <div class="phase-02-ui fixed inset-0 z-10 pointer-events-none flex flex-col justify-end p-12 opacity-0">
+      <div class="text-white">
+        <div class="text-xs tracking-[0.4em] opacity-50 uppercase mb-2">Target Acquired</div>
+        <div class="font-light tracking-[0.2em] text-xl opacity-90">KEPLER-186F</div>
+        <div class="text-xs tracking-widest opacity-40 mt-1">APPROACH VECTOR SECURED</div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -16,13 +25,11 @@ import { useLenis } from '~/composables/useLenis'
 const sceneComponent = ref<InstanceType<typeof OrbitalScene> | null>(null)
 const introComponent = ref<InstanceType<typeof OrbitalIntro> | null>(null)
 
-// Ensure lenis is running
 useLenis()
 
 let ctx: gsap.Context
 
 onMounted(() => {
-  // Give a small delay to ensure Three.js is initialized
   setTimeout(() => {
     ctx = gsap.context(() => {
       // 1. Initial State (Fade In from Black)
@@ -39,7 +46,6 @@ onMounted(() => {
         ease: 'power2.out'
       })
       
-      // Floating animation for the arrow
       gsap.to('.arrow', {
         y: 5,
         repeat: -1,
@@ -54,16 +60,17 @@ onMounted(() => {
           trigger: 'body',
           start: 'top top',
           end: 'bottom bottom',
-          scrub: 1.5, // Smooth scrubbing
+          scrub: 1.5,
         }
       })
 
       const camera = sceneComponent.value?.camera()
       const stars = sceneComponent.value?.starParticles()
+      const planetGroup = sceneComponent.value?.planetGroup()
 
-      // Title & Scroll Indicator Animations
+      // Phase 01: Leaving Intro (0% to 20%)
       tl.to('.intro-content', {
-        y: -150,
+        y: -200,
         opacity: 0,
         ease: 'power1.inOut',
         duration: 2
@@ -74,20 +81,45 @@ onMounted(() => {
         duration: 0.5
       }, 0)
 
-      // Camera & Space Animations
+      // Phase 01: Camera moves forward through stars (0% to 100%)
       if (camera) {
-        // Camera moves forward into the star field
+        // Move from z=800 all the way to z=-1500 (near the planet which is at -2500)
         tl.to(camera.position, {
-          z: 100, // Move from 800 to 100
+          z: -1600, 
           ease: 'power2.inOut',
+          duration: 10
+        }, 0)
+        
+        // Slight camera shake/drift for cinematic feel
+        tl.to(camera.rotation, {
+          x: 0.05,
+          y: -0.05,
+          z: 0.02,
+          ease: 'power1.inOut',
           duration: 10
         }, 0)
       }
 
       if (stars) {
-        // Increase parallax/movement effect
         tl.to(stars.rotation, {
           z: Math.PI / 4,
+          ease: 'power1.inOut',
+          duration: 10
+        }, 0)
+      }
+      
+      // Phase 02: Planet UI emerges (60% to 80%)
+      tl.to('.phase-02-ui', {
+        opacity: 1,
+        duration: 2,
+        ease: 'power2.out'
+      }, 6)
+      
+      // Phase 02: Planet slowly rotates to face us more
+      if (planetGroup) {
+        tl.to(planetGroup.rotation, {
+          y: Math.PI / 6,
+          x: -Math.PI / 12,
           ease: 'power1.inOut',
           duration: 10
         }, 0)

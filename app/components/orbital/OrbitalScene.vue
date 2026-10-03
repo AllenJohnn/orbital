@@ -9,7 +9,7 @@ import { useOrbitalScene } from '~/composables/useOrbitalScene'
 const sceneContainer = ref<HTMLElement | null>(null)
 
 // useOrbitalScene will handle the three.js initialisation
-const { init, cleanup, scene, camera, starParticles } = useOrbitalScene(sceneContainer)
+const { init, cleanup, scene, camera, starParticles, planetGroup } = useOrbitalScene(sceneContainer)
 
 onMounted(() => {
   init()
@@ -22,6 +22,7 @@ onBeforeUnmount(() => {
 defineExpose({
   scene: () => scene,
   camera: () => camera,
-  starParticles: () => starParticles
+  starParticles: () => starParticles,
+  planetGroup: () => planetGroup
 })
 </script>
