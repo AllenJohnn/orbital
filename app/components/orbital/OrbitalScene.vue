@@ -3,26 +3,27 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, onMounted, onBeforeUnmount, toRef } from 'vue'
 import { useOrbitalScene } from '~/composables/useOrbitalScene'
 
-const sceneContainer = ref<HTMLElement | null>(null)
+const props = defineProps<{
+  scrollProgress: number
+}>()
 
-// useOrbitalScene will handle the three.js initialisation
-const { init, cleanup, scene, camera, starParticles, planetGroup } = useOrbitalScene(sceneContainer)
+const sceneContainer = ref<HTMLElement | null>(null)
+const progressRef = toRef(props, 'scrollProgress')
+
+const orbital = useOrbitalScene(sceneContainer, progressRef)
 
 onMounted(() => {
-  init()
+  orbital.init()
 })
 
 onBeforeUnmount(() => {
-  cleanup()
+  orbital.cleanup()
 })
 
 defineExpose({
-  scene: () => scene,
-  camera: () => camera,
-  starParticles: () => starParticles,
-  planetGroup: () => planetGroup
+  orbital
 })
 </script>

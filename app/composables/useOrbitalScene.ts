@@ -5,7 +5,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 
-export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>) => {
+export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollProgress: Ref<number>) => {
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
   let renderer: THREE.WebGLRenderer
@@ -20,21 +20,19 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>) => {
     scene = new THREE.Scene()
     scene.fog = new THREE.FogExp2(0x000000, 0.00015) 
 
-    // Initial FOV of 45 for deep space
     camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 25000) 
     camera.position.z = 6000
 
-    renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true }) // antialias usually disabled when using postprocessing unless using FXAA
+    renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true }) 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(window.innerWidth, window.innerHeight)
     containerRef.value.appendChild(renderer.domElement)
 
-    // Post-processing setup
     const renderScene = new RenderPass(scene, camera)
     const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85)
-    bloomPass.threshold = 0.5
-    bloomPass.strength = 0.4
-    bloomPass.radius = 0.8
+    bloomPass.threshold = 0.8
+    bloomPass.strength = 0.35
+    bloomPass.radius = 0.5
 
     composer = new EffectComposer(renderer)
     composer.addPass(renderScene)
@@ -47,6 +45,8 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>) => {
     window.addEventListener('resize', onWindowResize)
     animate()
   }
+
+  // ... (keep createStarField as is, replace just the top part)
 
   const createStarField = () => {
     const starGeometry = new THREE.BufferGeometry()
@@ -132,18 +132,60 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>) => {
   const animate = () => {
     animationFrameId = requestAnimationFrame(animate)
     const time = performance.now() * 0.001
+    const p = scrollProgress.value
+
+    // 1. Scene State Update from Scroll Progress
+    // We use the exponential curve suggested by the user for perfect perceptual scaling
+    const startZ = 6000
+    const endZ = 550
+    
+    // Apply a subtle ease to the raw progress so the very beginning and very end have soft tangents
+    const easeProgress = p < 0.5 
+      ? 2 * p * p 
+      : 1 - Math.pow(-2 * p + 2, 2) / 2
+
+    // distance = start * (end/start)^progress
+    const currentZ = startZ * Math.pow(endZ / startZ, easeProgress)
+    
+    if (camera) {
+      camera.position.z = currentZ
+      
+      // Cinematic lateral drift and banking
+      camera.position.x = THREE.MathUtils.lerp(0, 40, easeProgress)
+      camera.position.y = THREE.MathUtils.lerp(0, -15, easeProgress)
+      
+      camera.rotation.x = THREE.MathUtils.lerp(0, 0.05, easeProgress)
+      camera.rotation.y = THREE.MathUtils.lerp(0, -0.05, easeProgress)
+      camera.rotation.z = THREE.MathUtils.lerp(0, 0.03, easeProgress)
+      
+      // Dynamic FOV
+      const newFov = THREE.MathUtils.lerp(45, 65, easeProgress)
+      if (Math.abs(camera.fov - newFov) > 0.1) {
+        camera.fov = newFov
+        camera.updateProjectionMatrix()
+      }
+    }
 
     if (starParticles) {
+      // Natural slow drift
       starParticles.rotation.y += 0.0001
       starParticles.rotation.x += 0.00005
       
+      // Stars fade out as we get very close
       const material = starParticles.material as THREE.ShaderMaterial
       if (material.uniforms) {
         material.uniforms.uTime.value = time
+        const starBrightness = THREE.MathUtils.lerp(1.0, 0.3, Math.pow(p, 4))
+        material.uniforms.uColor.value.setRGB(starBrightness, starBrightness, starBrightness)
       }
     }
     
     if (planetController) {
+      // Add subtle cinematic tilt/reveal to the planet
+      if (planetController.planetGroup) {
+        planetController.planetGroup.rotation.y = THREE.MathUtils.lerp(0, Math.PI / 6, easeProgress)
+        planetController.planetGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI / 24, easeProgress)
+      }
       planetController.update(time)
     }
 

@@ -86,21 +86,31 @@ varying vec3 vPositionWorld;
 void main() {
   vec3 normal = normalize(vNormalWorld);
   vec3 sunDir = normalize(uSunDirection);
-  
-  // cameraPosition is built-in in threejs when using ShaderMaterial
   vec3 viewDir = normalize(cameraPosition - vPositionWorld);
   
-  // Rim lighting using a sharper fresnel
+  // Fresnel for rim calculation
   float fresnel = max(1.0 - dot(normal, viewDir), 0.0);
-  float intensity = pow(fresnel, 5.0) * 0.9;
   
+  // 1. Core Rim (tight to the edge)
+  float rim = pow(fresnel, 8.0) * 1.5;
+  
+  // 2. Broad Scatter (softer, further in)
+  float scatter = pow(fresnel, 3.0) * 0.4;
+  
+  float intensity = rim + scatter;
+  
+  // Modulate by sun lighting
   float sunFacing = max(dot(normal, sunDir), 0.0);
-  float terminator = smoothstep(-0.2, 0.4, dot(normal, sunDir));
   
-  // Stronger near sun, subtle on terminator, almost none on dark side
-  float atmosphereGlow = intensity * (sunFacing * 1.5 + terminator * 0.4 + 0.05); 
+  // Sunset scattering tint at the terminator
+  float terminator = dot(normal, sunDir);
+  vec3 sunsetColor = vec3(0.8, 0.4, 0.2);
+  vec3 scatterColor = mix(sunsetColor, uAtmosphereColor, smoothstep(-0.1, 0.5, terminator));
   
-  gl_FragColor = vec4(uAtmosphereColor, atmosphereGlow);
+  // Final glow strength (very low on dark side)
+  float atmosphereGlow = intensity * (sunFacing * 1.5 + 0.02); 
+  
+  gl_FragColor = vec4(scatterColor, atmosphereGlow);
 }
 `
 
