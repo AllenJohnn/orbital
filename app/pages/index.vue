@@ -11,6 +11,7 @@
       <div>PLANET RADIUS: 400</div>
       <div>APPARENT DIAMETER: {{ ((800 / cameraDistance) * 100).toFixed(1) }}%</div>
       <div>PLANET ROTATION: {{ planetRotation.toFixed(1) }}°</div>
+      <div>CLOUD ROTATION: {{ (planetRotation * 1.1).toFixed(1) }}°</div>
       <div>FOV: {{ cameraFov.toFixed(1) }}</div>
     </div>
 

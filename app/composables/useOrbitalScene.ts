@@ -30,9 +30,9 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
 
     const renderScene = new RenderPass(scene, camera)
     const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85)
-    bloomPass.threshold = 0.8
-    bloomPass.strength = 0.35
-    bloomPass.radius = 0.5
+    bloomPass.threshold = 0.95 // Restrict bloom strictly to the sun-facing highlights and bright city lights
+    bloomPass.strength = 0.15  // Much more subtle, photographic bloom instead of heavy neon
+    bloomPass.radius = 0.8     // Softer diffusion
 
     composer = new EffectComposer(renderer)
     composer.addPass(renderScene)
@@ -59,21 +59,35 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     const sizes = new Float32Array(actualStarCount)
 
     for (let i = 0; i < actualStarCount; i++) {
-      const r = 5000 * Math.cbrt(Math.random()) + 500
-      const theta = Math.random() * 2 * Math.PI
-      const phi = Math.acos(2 * Math.random() - 1)
+      // Use exponential distance distribution for depth (most stars far away, few closer)
+      // Distance from center (0,0,0)
+      const distLayer = Math.pow(Math.random(), 3.0); 
+      const r = 1000 + distLayer * 15000;
+      
+      const theta = Math.random() * 2 * Math.PI;
+      const phi = Math.acos(2 * Math.random() - 1);
 
-      const x = r * Math.sin(phi) * Math.cos(theta)
-      const y = r * Math.sin(phi) * Math.sin(theta)
-      // Stars extend deep from Z = 8000 down to Z = -10000
-      const z = (Math.random() - 0.5) * 18000 
+      // Add some clustering/banding to simulate galactic plane (Milky way effect)
+      // Compress the Y axis for about 70% of the stars
+      let yOffset = r * Math.sin(phi) * Math.sin(theta);
+      if (Math.random() > 0.3) {
+         yOffset *= 0.2; // Flatten into a disc-like band
+      }
 
-      positions[i * 3] = x
-      positions[i * 3 + 1] = y
-      positions[i * 3 + 2] = z
+      const x = r * Math.sin(phi) * Math.cos(theta);
+      const y = yOffset;
+      const z = (Math.random() - 0.5) * 20000; 
 
-      opacities[i] = Math.random() * 0.8 + 0.2
-      sizes[i] = (Math.random() * 1.5 + 0.5)
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = z;
+
+      // Far stars are dimmer, close stars can be brighter
+      const depthIntensity = 1.0 - (distLayer * 0.7); 
+      opacities[i] = (Math.random() * 0.7 + 0.1) * depthIntensity;
+      
+      // Sizes vary significantly. A few large stars, many tiny ones.
+      sizes[i] = Math.pow(Math.random(), 4.0) * 2.5 + 0.3;
     }
 
     starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
