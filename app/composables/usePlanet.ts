@@ -97,8 +97,8 @@ export const usePlanet = (scene: THREE.Scene) => {
   
   const update = (time: number, progress: number) => {
     // 1. Deterministic scroll-driven rotation (surface)
-    // 300 degrees total rotation as we approach
-    const targetRotation = progress * (300 * Math.PI / 180)
+    // 240 degrees total rotation as we approach
+    const targetRotation = progress * (240 * Math.PI / 180)
     surface.rotation.y = targetRotation
     
     // Clouds rotate very slightly faster than the surface (e.g. 10% faster)
