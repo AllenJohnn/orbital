@@ -155,8 +155,8 @@ float getImpactHistory(vec3 p, float distToCam) {
     }
     
     // Small crater fields
-    if (distToCam < 400.0) {
-        float fade = smoothstep(400.0, 100.0, distToCam);
+    if (distToCam < 180.0) {
+        float fade = smoothstep(180.0, 45.0, distToCam);
         basins += getImpactBasin(p, 20.0, 0.35, 0.3) * 0.1 * fade;
     }
     return basins;
@@ -201,7 +201,10 @@ float getElevation(vec3 p, float distToCam) {
   // 3. IMPACT HISTORY (Macro & Regional)
   // DE-CLUTTER: Limit craters mostly to ancient highlands, keeping oceans and new plains quiet
   float basinMask = smoothstep(-0.2, 0.6, continents); 
-  float basins = getImpactHistory(p, distToCam) * basinMask;
+  float basins = 0.0;
+  if (basinMask > 0.01) {
+    basins = getImpactHistory(p, distToCam) * basinMask;
+  }
   
   // Combine Macro & Regional
   float elevation = baseTerrain * 0.35 + 0.4; // Base height mapping
@@ -214,11 +217,13 @@ float getElevation(vec3 p, float distToCam) {
       float localDetailMask = smoothstep(0.4, 0.9, continents) + mountainMask;
       localDetailMask = clamp(localDetailMask, 0.0, 1.0);
       
-      float localDetail = fbm(p * 15.0) * 0.025;
-      if (distToCam < 500.0) {
-          localDetail += ridgedFBM(p * 35.0) * 0.015 * smoothstep(500.0, 100.0, distToCam);
+      if (localDetailMask > 0.01) {
+          float localDetail = fbm(p * 15.0) * 0.025;
+          if (distToCam < 500.0) {
+              localDetail += ridgedFBM(p * 35.0) * 0.015 * smoothstep(500.0, 100.0, distToCam);
+          }
+          elevation += localDetail * localDetailMask * smoothstep(1500.0, 300.0, distToCam);
       }
-      elevation += localDetail * localDetailMask * smoothstep(1500.0, 300.0, distToCam);
   }
   
   // 5. MICRO DETAIL (Evaluated only at very close atmospheric entry)
@@ -243,8 +248,7 @@ float getElevation(vec3 p, float distToCam) {
 }
 
 // Surface Elevation Function (Handles Water Level & Waves)
-float getSurfaceElevation(vec3 p, float distToCam) {
-  float e = getElevation(p, distToCam);
+float getSurfaceElevationFromTerrain(vec3 p, float e, float distToCam) {
   float seaLevel = 0.55;
   if (e < seaLevel) {
     // Water surface: low-frequency swell + high-frequency micro ripples
@@ -269,10 +273,9 @@ void main() {
   float distToCam = length(viewOffset);
   vec3 viewDir = normalize(viewOffset);
 
-  // Evaluate terrain elevation for biome logic
+  // Evaluate the expensive terrain field once for biome and water shading.
   float terrainElevation = getElevation(localNormal, distToCam);
-  // Evaluate actual surface elevation for bump mapping
-  float surfaceElevation = getSurfaceElevation(localNormal, distToCam);
+  float surfaceElevation = getSurfaceElevationFromTerrain(localNormal, terrainElevation, distToCam);
   
   // --------------------------------------------------------
   // GEOLOGICAL BUMP MAPPING (Normal Perturbation)
@@ -291,8 +294,10 @@ void main() {
   if (length(lt1) < 0.1) lt1 = normalize(cross(localNormal, vec3(1.0, 0.0, 0.0)));
   vec3 lt2 = normalize(cross(localNormal, lt1));
   
-  float e1 = getSurfaceElevation(normalize(localNormal + lt1 * eps), distToCam);
-  float e2 = getSurfaceElevation(normalize(localNormal + lt2 * eps), distToCam);
+  vec3 sample1 = normalize(localNormal + lt1 * eps);
+  vec3 sample2 = normalize(localNormal + lt2 * eps);
+  float e1 = getSurfaceElevationFromTerrain(sample1, getElevation(sample1, distToCam), distToCam);
+  float e2 = getSurfaceElevationFromTerrain(sample2, getElevation(sample2, distToCam), distToCam);
   
   // Bump strength reduces slightly at extreme distance to prevent noisy terminator
   float bumpStrength = mix(8.0, 1.5, smoothstep(50.0, 4000.0, distToCam)); 
@@ -467,6 +472,7 @@ void main() {
 export const atmosphereFragmentShader = `
 uniform vec3 uSunDirection;
 uniform vec3 uAtmosphereColor;
+uniform float uViewSunAlignment;
 varying vec3 vNormalWorld;
 varying vec3 vPositionWorld;
 
@@ -511,6 +517,11 @@ void main() {
   // 3. COMBINE
   vec3 finalScatterColor = limbGlowColor * (warmLimbMask * 3.0 + warmHazeMask * 1.5) + 
                            coolColor * (coolLimbMask * 1.0 + coolHazeMask * 0.8);
+
+  // Camera-facing gold/orange veiling scatter, independent of the cool blue rim.
+  // It hugs only the sunlit horizon and fades completely when the view turns away.
+  float solarHorizon = pow(fresnel, 8.0) * smoothstep(-0.25, 0.35, sunFacing);
+  finalScatterColor += vec3(1.0, 0.62, 0.28) * solarHorizon * uViewSunAlignment * 2.2;
                            
   // Eclipse forward scatter (when star is behind planet)
   float backscatter = max(dot(viewDir, -sunDir), 0.0);

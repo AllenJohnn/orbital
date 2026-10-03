@@ -25,6 +25,8 @@
         <div class="text-xs tracking-widest opacity-40 mt-1">APPROACH VECTOR SECURED</div>
       </div>
     </div>
+
+
   </div>
 </template>
 
@@ -48,19 +50,18 @@ const mainContainer = ref<HTMLElement | null>(null)
 const { lenis } = useLenis()
 
 // We'll update the telemetry variables in a fast interval or RAF
-let telemetryRaf: number
+let telemetryInterval: ReturnType<typeof setInterval> | undefined
 let ctx: gsap.Context
 
 const updateTelemetry = () => {
-  telemetryRaf = requestAnimationFrame(updateTelemetry)
-  
   if (sceneComponent.value && sceneComponent.value.orbital) {
-    const cam = sceneComponent.value.orbital.camera
+    const orbital = sceneComponent.value.orbital
+    const cam = orbital.camera
     if (cam) {
-      cameraDistance.value = cam.position.z // Since planet is at 0, Z is distance
+      cameraDistance.value = cam.position.length()
       cameraFov.value = cam.fov
     }
-    planetRotation.value = sceneComponent.value.orbital.surfaceRotation * (180 / Math.PI)
+    planetRotation.value = orbital.surfaceRotation * (180 / Math.PI)
   }
 }
 
@@ -117,6 +118,7 @@ onMounted(() => {
   }
   
   updateTelemetry()
+  telemetryInterval = window.setInterval(updateTelemetry, 200)
 })
 
 onBeforeUnmount(() => {
@@ -126,6 +128,6 @@ onBeforeUnmount(() => {
   } else {
     window.removeEventListener('scroll', onScroll)
   }
-  cancelAnimationFrame(telemetryRaf)
+  if (telemetryInterval) window.clearInterval(telemetryInterval)
 })
 </script>

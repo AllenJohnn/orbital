@@ -11,7 +11,7 @@ export const useLenis = () => {
       gsap.registerPlugin(ScrollTrigger)
 
       lenis.value = new Lenis({
-        lerp: 0.05,
+        lerp: 0.085,
         smoothWheel: true,
       })
 

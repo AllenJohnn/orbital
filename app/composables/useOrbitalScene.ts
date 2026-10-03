@@ -1,147 +1,106 @@
 import * as THREE from 'three'
 import type { Ref } from 'vue'
 import { usePlanet } from './usePlanet'
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 
 export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollProgress: Ref<number>) => {
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
   let renderer: THREE.WebGLRenderer
-  let composer: EffectComposer
-  let bloomPass: UnrealBloomPass
   let starParticles: THREE.Points
   let sunSprite: THREE.Sprite
-  let animationFrameId: number
+  let glareSprite: THREE.Sprite
+  let glareTexture: THREE.CanvasTexture
+  let animationFrameId = 0
+  let initialized = false
+  let rendererReady = false
+  let running = false
   let planetController: ReturnType<typeof usePlanet> | null = null
+  let pixelRatio = 1
+  let slowFrames = 0
+  let fastFrames = 0
+  let previousFrameTime = 0
+  let lastFrameDelta = 0
+  let lastProfileTime = 0
 
-  const createStarTexture = () => {
-    // Generate a beautiful, realistic glowing star sprite
+  const sunDir = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
+  const rotationAxis = new THREE.Vector3()
+  const startDir = new THREE.Vector3(0, 0, 1)
+  const totalOrbitAngle = startDir.angleTo(sunDir.clone().negate())
+  const basePos = new THREE.Vector3()
+  const finalPos = new THREE.Vector3()
+  const camToPlanet = new THREE.Vector3()
+  const forward = new THREE.Vector3()
+  const up = new THREE.Vector3()
+  const right = new THREE.Vector3()
+  const lookHorizon = new THREE.Vector3()
+  const finalLookAt = new THREE.Vector3()
+  const cameraForward = new THREE.Vector3()
+  const sunScreen = new THREE.Vector3()
+  const glarePosition = new THREE.Vector3()
+
+  rotationAxis.crossVectors(startDir, sunDir.clone().negate()).normalize()
+
+  const createRadialTexture = (warm = false) => {
     const canvas = document.createElement('canvas')
     canvas.width = 256
     canvas.height = 256
-    const ctx = canvas.getContext('2d')
-    if (ctx) {
-      const gradient = ctx.createRadialGradient(128, 128, 0, 128, 128, 128)
-      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-      gradient.addColorStop(0.1, 'rgba(255, 255, 255, 0.95)')
-      gradient.addColorStop(0.3, 'rgba(210, 230, 255, 0.4)')
-      gradient.addColorStop(1, 'rgba(0, 0, 0, 0)')
-      ctx.fillStyle = gradient
-      ctx.fillRect(0, 0, 256, 256)
+    const context = canvas.getContext('2d')
+    if (context) {
+      const gradient = context.createRadialGradient(128, 128, 0, 128, 128, 128)
+      if (warm) {
+        gradient.addColorStop(0, 'rgba(255, 248, 224, 0.92)')
+        gradient.addColorStop(0.10, 'rgba(255, 224, 184, 0.58)')
+        gradient.addColorStop(0.30, 'rgba(255, 174, 112, 0.22)')
+        gradient.addColorStop(0.62, 'rgba(255, 126, 66, 0.07)')
+        gradient.addColorStop(1, 'rgba(255, 126, 66, 0)')
+      } else {
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
+        gradient.addColorStop(0.1, 'rgba(255, 255, 255, 0.95)')
+        gradient.addColorStop(0.3, 'rgba(210, 230, 255, 0.4)')
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)')
+      }
+      context.fillStyle = gradient
+      context.fillRect(0, 0, 256, 256)
     }
     return new THREE.CanvasTexture(canvas)
   }
 
-  const init = () => {
-    if (!containerRef.value) return
-
-    scene = new THREE.Scene()
-    scene.fog = new THREE.FogExp2(0x000000, 0.00015) 
-
-    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 25000) 
-    camera.position.z = 6000
-
-    renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true }) 
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.setSize(window.innerWidth, window.innerHeight)
-    containerRef.value.appendChild(renderer.domElement)
-
-    const renderScene = new RenderPass(scene, camera)
-    bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85)
-    bloomPass.threshold = 0.95 // Restrict bloom strictly to the sun-facing highlights and bright city lights
-    bloomPass.strength = 0.15  // Much more subtle, photographic bloom instead of heavy neon
-    bloomPass.radius = 0.8     // Softer diffusion
-
-    composer = new EffectComposer(renderer)
-    composer.addPass(renderScene)
-    composer.addPass(bloomPass)
-
-    createStarField()
-    
-    // Add the sun sprite
-    const sunMaterial = new THREE.SpriteMaterial({
-      map: createStarTexture(),
-      color: 0xffffff,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    })
-    sunSprite = new THREE.Sprite(sunMaterial)
-    // The sun is placed far away along the exact sun direction vector
-    const sunDir = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
-    sunSprite.position.copy(sunDir.clone().multiplyScalar(8000))
-    sunSprite.scale.set(600, 600, 1)
-    scene.add(sunSprite)
-    
-    planetController = usePlanet(scene)
-
-    window.addEventListener('resize', onWindowResize)
-    animate()
-  }
-
-  // ... (keep createStarField as is, replace just the top part)
-
   const createStarField = () => {
-    const starGeometry = new THREE.BufferGeometry()
-    const starCount = 8000 // slightly increased for depth
-    const isMobile = window.innerWidth < 768
-    const actualStarCount = isMobile ? Math.floor(starCount * 0.4) : starCount
+    const geometry = new THREE.BufferGeometry()
+    const starCount = window.innerWidth < 768 ? 3200 : 8000
+    const positions = new Float32Array(starCount * 3)
+    const opacities = new Float32Array(starCount)
+    const sizes = new Float32Array(starCount)
 
-    const positions = new Float32Array(actualStarCount * 3)
-    const opacities = new Float32Array(actualStarCount)
-    const sizes = new Float32Array(actualStarCount)
+    for (let i = 0; i < starCount; i++) {
+      const distLayer = Math.pow(Math.random(), 3.0)
+      const radius = 1000 + distLayer * 15000
+      const theta = Math.random() * Math.PI * 2
+      const phi = Math.acos(2 * Math.random() - 1)
+      let y = radius * Math.sin(phi) * Math.sin(theta)
+      if (Math.random() > 0.3) y *= 0.2
 
-    for (let i = 0; i < actualStarCount; i++) {
-      // Use exponential distance distribution for depth (most stars far away, few closer)
-      // Distance from center (0,0,0)
-      const distLayer = Math.pow(Math.random(), 3.0); 
-      const r = 1000 + distLayer * 15000;
-      
-      const theta = Math.random() * 2 * Math.PI;
-      const phi = Math.acos(2 * Math.random() - 1);
-
-      // Add some clustering/banding to simulate galactic plane (Milky way effect)
-      // Compress the Y axis for about 70% of the stars
-      let yOffset = r * Math.sin(phi) * Math.sin(theta);
-      if (Math.random() > 0.3) {
-         yOffset *= 0.2; // Flatten into a disc-like band
-      }
-
-      const x = r * Math.sin(phi) * Math.cos(theta);
-      const y = yOffset;
-      const z = (Math.random() - 0.5) * 20000; 
-
-      positions[i * 3] = x;
-      positions[i * 3 + 1] = y;
-      positions[i * 3 + 2] = z;
-
-      // Far stars are dimmer, close stars can be brighter
-      const depthIntensity = 1.0 - (distLayer * 0.7); 
-      opacities[i] = (Math.random() * 0.7 + 0.1) * depthIntensity;
-      
-      // Sizes vary significantly. A few large stars, many tiny ones.
-      sizes[i] = Math.pow(Math.random(), 4.0) * 2.5 + 0.3;
+      positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta)
+      positions[i * 3 + 1] = y
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 20000
+      opacities[i] = (Math.random() * 0.7 + 0.1) * (1.0 - distLayer * 0.7)
+      sizes[i] = Math.pow(Math.random(), 4.0) * 2.5 + 0.3
     }
 
-    starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-    starGeometry.setAttribute('aOpacity', new THREE.BufferAttribute(opacities, 1))
-    starGeometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1))
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geometry.setAttribute('aOpacity', new THREE.BufferAttribute(opacities, 1))
+    geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1))
 
-    const starMaterial = new THREE.ShaderMaterial({
+    const material = new THREE.ShaderMaterial({
       uniforms: {
-        uTime: { value: 0 },
         uColor: { value: new THREE.Color(0xffffff) },
-        uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) }
+        uPixelRatio: { value: pixelRatio }
       },
       vertexShader: `
         attribute float aOpacity;
         attribute float aSize;
         varying float vOpacity;
-        uniform float uTime;
         uniform float uPixelRatio;
-
         void main() {
           vOpacity = aOpacity;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
@@ -152,11 +111,9 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
       fragmentShader: `
         varying float vOpacity;
         uniform vec3 uColor;
-
         void main() {
           float dist = distance(gl_PointCoord, vec2(0.5));
           if (dist > 0.5) discard;
-          
           float alpha = smoothstep(0.5, 0.1, dist) * vOpacity;
           gl_FragColor = vec4(uColor, alpha);
         }
@@ -166,8 +123,19 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
       blending: THREE.AdditiveBlending
     })
 
-    starParticles = new THREE.Points(starGeometry, starMaterial)
+    starParticles = new THREE.Points(geometry, material)
     scene.add(starParticles)
+  }
+
+  const setPixelRatio = (nextRatio: number) => {
+    if (!renderer || !camera || Math.abs(nextRatio - pixelRatio) < 0.01) return
+    pixelRatio = nextRatio
+    renderer.setPixelRatio(pixelRatio)
+    renderer.setSize(window.innerWidth, window.innerHeight)
+    const starMaterial = starParticles?.material as THREE.ShaderMaterial | undefined
+    if (starMaterial?.uniforms?.uPixelRatio) {
+      starMaterial.uniforms.uPixelRatio.value = pixelRatio
+    }
   }
 
   const onWindowResize = () => {
@@ -175,188 +143,269 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     camera.aspect = window.innerWidth / window.innerHeight
     camera.updateProjectionMatrix()
     renderer.setSize(window.innerWidth, window.innerHeight)
-    if (composer) composer.setSize(window.innerWidth, window.innerHeight)
   }
 
-  // --- SHARED VECTORS FOR ANIMATE LOOP (Avoid GC pressure) ---
-  const _basePos = new THREE.Vector3()
-  const _sunDir = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
-  const _shadowDir = _sunDir.clone().negate()
-  const _startDir = new THREE.Vector3(0, 0, 1)
-  const _rotationAxis = new THREE.Vector3().crossVectors(_startDir, _shadowDir).normalize()
-  const _totalOrbitAngle = _startDir.angleTo(_shadowDir)
-  const _finalPos = new THREE.Vector3()
-  const _camToSun = _sunDir.clone()
-  const _camToPlanet = new THREE.Vector3()
-  const _lookCenter = new THREE.Vector3(0, 0, 0)
-  const _up = new THREE.Vector3()
-  const _forward = new THREE.Vector3()
-  const _lookHorizon = new THREE.Vector3()
-  const _finalLookAt = new THREE.Vector3()
-  const _cameraForward = new THREE.Vector3()
+  const onVisibilityChange = () => {
+    if (document.hidden) {
+      running = false
+      cancelAnimationFrame(animationFrameId)
+      animationFrameId = 0
+      previousFrameTime = 0
+      return
+    }
+    if (initialized && rendererReady && !running) {
+      running = true
+      animationFrameId = requestAnimationFrame(animate)
+    }
+  }
 
-  const animate = () => {
+  const init = () => {
+    if (!containerRef.value || initialized) return
+    initialized = true
+    scene = new THREE.Scene()
+    scene.fog = new THREE.FogExp2(0x000000, 0.00015)
+
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 25000)
+    camera.position.z = 6000
+
+    renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' })
+    pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5)
+    renderer.setPixelRatio(pixelRatio)
+    renderer.setSize(window.innerWidth, window.innerHeight)
+    containerRef.value.appendChild(renderer.domElement)
+
+    createStarField()
+
+    const sunMaterial = new THREE.SpriteMaterial({
+      map: createRadialTexture(),
+      color: 0xffffff,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    })
+    sunSprite = new THREE.Sprite(sunMaterial)
+    sunSprite.position.copy(sunDir).multiplyScalar(8000)
+    sunSprite.scale.set(600, 600, 1)
+    scene.add(sunSprite)
+
+    glareTexture = createRadialTexture(true)
+    const glareMaterial = new THREE.SpriteMaterial({
+      map: glareTexture,
+      color: 0xffe4c2,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false
+    })
+    glareSprite = new THREE.Sprite(glareMaterial)
+    glareSprite.visible = false
+    glareSprite.renderOrder = 1000
+    scene.add(glareSprite)
+
+    planetController = usePlanet(scene)
+    window.addEventListener('resize', onWindowResize, { passive: true })
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    // Precompile asynchronously so shader linking does not block the page's
+    // main thread on first load or after HMR. Keep the overlay in the compile
+    // set so the first Sun-facing frame cannot trigger a late compile.
+    glareSprite.visible = true
+    void renderer.compileAsync(scene, camera).then(() => {
+      if (!initialized) return
+      glareSprite.visible = false
+      rendererReady = true
+      if (!document.hidden && !running) {
+        running = true
+        animationFrameId = requestAnimationFrame(animate)
+      }
+    }).catch((error: unknown) => {
+      console.warn('ORBITAL shader precompile failed; continuing with normal rendering.', error)
+      if (!initialized) return
+      glareSprite.visible = false
+      rendererReady = true
+      if (!document.hidden && !running) {
+        running = true
+        animationFrameId = requestAnimationFrame(animate)
+      }
+    })
+  }
+
+  const animate = (timestamp: number) => {
+    if (!running) return
     animationFrameId = requestAnimationFrame(animate)
-    const time = performance.now() * 0.001
+
+    if (previousFrameTime > 0) {
+      lastFrameDelta = timestamp - previousFrameTime
+      const frameMs = lastFrameDelta
+      if (frameMs > 25) {
+        slowFrames++
+        fastFrames = 0
+        if (slowFrames >= 5 && pixelRatio > 1.0) {
+          setPixelRatio(Math.max(1.0, pixelRatio - 0.125))
+          slowFrames = 0
+        }
+      } else if (frameMs < 19) {
+        fastFrames++
+        slowFrames = 0
+        if (fastFrames >= 180 && pixelRatio < Math.min(window.devicePixelRatio || 1, 1.5)) {
+          setPixelRatio(Math.min(Math.min(window.devicePixelRatio || 1, 1.5), pixelRatio + 0.125))
+          fastFrames = 0
+        }
+      } else {
+        slowFrames = 0
+        fastFrames = 0
+      }
+    }
+    previousFrameTime = timestamp
+
+    const time = timestamp * 0.001
     const p = scrollProgress.value
-
-    const startZ = 6000
-    const endZ = 404
-    
-    const easeProgress = p < 0.5 
-      ? 2 * p * p 
+    const easeProgress = p < 0.5
+      ? 2 * p * p
       : 1 - Math.pow(-2 * p + 2, 2) / 2
+    const currentZ = 6000 * Math.pow(404 / 6000, easeProgress)
 
-    const currentZ = startZ * Math.pow(endZ / startZ, easeProgress)
-    
-    _basePos.set(
+    basePos.set(
       THREE.MathUtils.lerp(0, 40, easeProgress),
       THREE.MathUtils.lerp(0, -15, easeProgress),
       currentZ
     )
-    
-    let orbitFactor = 0
-    if (p > 0.5) {
-      orbitFactor = THREE.MathUtils.smoothstep(p, 0.5, 0.88)
-    }
-    let eclipseAngleProgress = 0
-    if (p <= 0.88) {
-      eclipseAngleProgress = orbitFactor
-    } else {
-      const postP = (p - 0.88) / 0.12
-      eclipseAngleProgress = 1.0 + postP * 0.2 
-    }
 
-    const currentOrbitAngle = eclipseAngleProgress * _totalOrbitAngle
-    
-    _finalPos.copy(_basePos).applyAxisAngle(_rotationAxis, currentOrbitAngle)
-    
-    _camToPlanet.set(0,0,0).sub(_finalPos).normalize()
-    const angleToSun = _camToSun.angleTo(_camToPlanet)
-    
-    const safeLen = Math.max(_finalPos.length(), 400.1)
-    const planetAngularRadius = Math.asin(400 / safeLen)
-    
+    const orbitFactor = p > 0.5 ? THREE.MathUtils.smoothstep(p, 0.5, 0.88) : 0
+    const eclipseAngleProgress = p <= 0.88 ? orbitFactor : 1.0 + ((p - 0.88) / 0.12) * 0.2
+    finalPos.copy(basePos).applyAxisAngle(rotationAxis, eclipseAngleProgress * totalOrbitAngle)
+    camToPlanet.set(0, 0, 0).sub(finalPos).normalize()
+    const angleToSun = sunDir.angleTo(camToPlanet)
+    const safeLength = Math.max(finalPos.length(), 400.1)
+    const planetAngularRadius = Math.asin(400 / safeLength)
     const eclipseFactor = 1.0 - THREE.MathUtils.clamp(
-      (angleToSun - planetAngularRadius * 0.6) / (planetAngularRadius * 0.6), 
-      0, 1
+      (angleToSun - planetAngularRadius * 0.6) / (planetAngularRadius * 0.6),
+      0,
+      1
     )
 
-    if (camera) {
-      camera.position.copy(_finalPos)
-      
-      const surfaceApproachProgress = THREE.MathUtils.clamp((p - 0.75) / 0.25, 0, 1)
-      
-      _up.copy(_finalPos).normalize()
-      _forward.crossVectors(_up, _rotationAxis).normalize()
-      _lookHorizon.copy(_finalPos).add(_forward.multiplyScalar(1000)).sub(_up.multiplyScalar(80))
-      
-      const lookEase = Math.pow(surfaceApproachProgress, 4.0)
-      _finalLookAt.copy(_lookCenter).lerp(_lookHorizon, lookEase * 0.95)
-      
-      camera.lookAt(_finalLookAt)
-      
-      // Cinematic banking
-      camera.rotation.z += THREE.MathUtils.lerp(0, 0.05, easeProgress)
-      
-      // Dynamic FOV
-      const newFov = THREE.MathUtils.lerp(45, 80, easeProgress)
-      if (Math.abs(camera.fov - newFov) > 0.1) {
-        camera.fov = newFov
-        camera.updateProjectionMatrix()
-      }
-      
-      // --- CINEMATIC SOLAR GLARE ---
-      camera.getWorldDirection(_cameraForward)
-      const starAlignment = Math.max(0.0, _cameraForward.dot(_sunDir))
-      
-      // Exponential alignment curve so it only washes out when staring near the sun
-      const glareIntensity = Math.pow(starAlignment, 12.0)
-      const extremeGlare = Math.pow(starAlignment, 32.0)
-      
-      // Occlusion masks the glare if the star is behind the planet
-      const occlusionMask = 1.0 - eclipseFactor
-      const activeGlare = (glareIntensity * 0.8 + extremeGlare * 2.0) * occlusionMask
-      
-      // Wash out exposure subtly
-      renderer.toneMappingExposure = 1.0 + (activeGlare * 0.7)
-      
-      // Overpower the bloom to mimic a flooded camera sensor
-      if (bloomPass) {
-        // Base bloom is stronger in dark, replaced by glare when facing sun
-        const baseStrength = THREE.MathUtils.lerp(0.15, 0.02, eclipseFactor)
-        bloomPass.strength = baseStrength + (glareIntensity * 0.5 * occlusionMask)
-        bloomPass.radius = 0.8 + (glareIntensity * 0.6 * occlusionMask)
-      }
+    camera.position.copy(finalPos)
+    const surfaceApproachProgress = THREE.MathUtils.clamp((p - 0.75) / 0.25, 0, 1)
+    up.copy(finalPos).normalize()
+    forward.crossVectors(up, rotationAxis).normalize()
+    lookHorizon.copy(finalPos).addScaledVector(forward, 1000).addScaledVector(up, -80)
+    finalLookAt.set(0, 0, 0).lerp(lookHorizon, Math.pow(surfaceApproachProgress, 4.0) * 0.95)
+    camera.lookAt(finalLookAt)
+    camera.rotation.z += THREE.MathUtils.lerp(0, 0.05, easeProgress)
+
+    const nextFov = THREE.MathUtils.lerp(45, 80, easeProgress)
+    if (Math.abs(camera.fov - nextFov) > 0.1) {
+      camera.fov = nextFov
+      camera.updateProjectionMatrix()
+    }
+
+    camera.getWorldDirection(cameraForward)
+    const sunAlignment = Math.max(0, cameraForward.dot(sunDir))
+    const alignmentEnvelope = THREE.MathUtils.smoothstep(sunAlignment, 0.68, 0.86)
+    const rayProjection = finalPos.dot(sunDir)
+    const rayDiscriminant = rayProjection * rayProjection - (finalPos.lengthSq() - 400 * 400)
+    const sunVisibility = rayProjection < 0
+      ? 1.0 - THREE.MathUtils.smoothstep(rayDiscriminant, -4000, 5000)
+      : 1.0
+    const activeGlare = Math.pow(alignmentEnvelope, 1.35) * sunVisibility
+
+    if (activeGlare > 0.005) {
+      camera.updateMatrixWorld()
+      sunScreen.copy(sunSprite.position).project(camera)
+      right.setFromMatrixColumn(camera.matrixWorld, 0)
+      up.setFromMatrixColumn(camera.matrixWorld, 1)
+      const distance = 8
+      const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * distance
+      const halfWidth = halfHeight * camera.aspect
+      glarePosition.copy(camera.position)
+        .addScaledVector(cameraForward, distance)
+        .addScaledVector(right, sunScreen.x * halfWidth)
+        .addScaledVector(up, sunScreen.y * halfHeight)
+      glareSprite.position.copy(glarePosition)
+      glareSprite.quaternion.copy(camera.quaternion)
+      glareSprite.scale.set(halfWidth * 1.8, halfHeight * 1.8, 1)
+      glareSprite.material.opacity = activeGlare * 0.65
+      glareSprite.visible = true
+    } else {
+      glareSprite.visible = false
     }
 
     if (starParticles) {
       starParticles.rotation.y += 0.0001
       starParticles.rotation.x += 0.00005
-      
       const material = starParticles.material as THREE.ShaderMaterial
-      if (material.uniforms) {
-        material.uniforms.uTime.value = time
-        const baseBrightness = THREE.MathUtils.lerp(1.0, 0.3, Math.pow(p, 4))
-        const eclipseBrightnessBoost = eclipseFactor * 1.5
-        const finalBrightness = baseBrightness + eclipseBrightnessBoost
-        material.uniforms.uColor.value.setRGB(finalBrightness, finalBrightness, finalBrightness)
-      }
-    }
-    
-    if (planetController) {
-      if (planetController.planetGroup) {
-        planetController.planetGroup.rotation.y = THREE.MathUtils.lerp(0, Math.PI / 6, easeProgress)
-        planetController.planetGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI / 24, easeProgress)
-      }
-      planetController.update(time, p)
+      const baseBrightness = THREE.MathUtils.lerp(1.0, 0.3, Math.pow(p, 4))
+      const brightness = baseBrightness + eclipseFactor * 1.5
+      material.uniforms.uColor.value.setRGB(brightness, brightness, brightness)
     }
 
-    if (composer) {
-      composer.render()
-    } else if (renderer && scene && camera) {
-      renderer.render(scene, camera)
+    if (planetController) {
+      planetController.planetGroup.rotation.y = THREE.MathUtils.lerp(0, Math.PI / 6, easeProgress)
+      planetController.planetGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI / 24, easeProgress)
+      planetController.update(time, p, alignmentEnvelope)
+    }
+
+    renderer.render(scene, camera)
+
+    if (import.meta.dev && timestamp - lastProfileTime >= 1000) {
+      const info = renderer.info
+      console.debug('[ORBITAL perf]', {
+        scrollProgress: Number(p.toFixed(3)),
+        frameDeltaMs: Number(lastFrameDelta.toFixed(1)),
+        pixelRatio,
+        drawCalls: info.render.calls,
+        triangles: info.render.triangles,
+        geometries: info.memory.geometries,
+        textures: info.memory.textures
+      })
+      lastProfileTime = timestamp
     }
   }
 
   const cleanup = () => {
+    if (!initialized) return
+    initialized = false
+    rendererReady = false
+    running = false
     if (animationFrameId) cancelAnimationFrame(animationFrameId)
+    animationFrameId = 0
+    previousFrameTime = 0
+    lastFrameDelta = 0
+    lastProfileTime = 0
     window.removeEventListener('resize', onWindowResize)
-    
-    if (planetController) {
-      planetController.cleanup()
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+
+    planetController?.cleanup()
+    planetController = null
+    if (scene) {
+      if (starParticles) scene.remove(starParticles)
+      if (sunSprite) scene.remove(sunSprite)
+      if (glareSprite) scene.remove(glareSprite)
     }
-    
-    if (composer) {
-      composer.renderTarget1.dispose()
-      composer.renderTarget2.dispose()
-      if (bloomPass) {
-        bloomPass.dispose()
-      }
-    }
-    
-    if (renderer && renderer.domElement && containerRef.value) {
-      containerRef.value.removeChild(renderer.domElement)
-      renderer.dispose()
-    }
-    
     if (starParticles) {
       starParticles.geometry.dispose()
       ;(starParticles.material as THREE.Material).dispose()
     }
-    
     if (sunSprite) {
-      const mat = sunSprite.material as THREE.SpriteMaterial
-      if (mat.map) mat.map.dispose()
-      mat.dispose()
+      const material = sunSprite.material as THREE.SpriteMaterial
+      material.map?.dispose()
+      material.dispose()
+    }
+    if (glareSprite) (glareSprite.material as THREE.Material).dispose()
+    glareTexture?.dispose()
+    if (renderer) {
+      renderer.domElement.parentElement?.removeChild(renderer.domElement)
+      renderer.dispose()
     }
   }
 
-  return { 
-    init, 
-    cleanup, 
-    get scene() { return scene }, 
-    get camera() { return camera }, 
+  return {
+    init,
+    cleanup,
+    get scene() { return scene },
+    get camera() { return camera },
     get starParticles() { return starParticles },
     get planetGroup() { return planetController?.planetGroup },
     get surfaceRotation() { return planetController?.surfaceRotation ?? 0 }

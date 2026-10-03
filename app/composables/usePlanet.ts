@@ -36,14 +36,15 @@ export const usePlanet = (scene: THREE.Scene) => {
   planetRotationGroup.add(surface)
   
   // 2. Atmosphere
-  const atmosphereRadius = radius * 1.15
+  const atmosphereRadius = radius * 1.08
   const atmosphereGeometry = new THREE.SphereGeometry(atmosphereRadius, widthSegments, heightSegments)
   const atmosphereMaterial = new THREE.ShaderMaterial({
     vertexShader: atmosphereVertexShader,
     fragmentShader: atmosphereFragmentShader,
     uniforms: {
       uSunDirection: { value: sunDirection },
-      uAtmosphereColor: { value: new THREE.Color(0x6a9dff) } 
+      uAtmosphereColor: { value: new THREE.Color(0x6a9dff) },
+      uViewSunAlignment: { value: 0 }
     },
     transparent: true,
     blending: THREE.AdditiveBlending,
@@ -56,6 +57,7 @@ export const usePlanet = (scene: THREE.Scene) => {
   
   // 3. Clouds
   const cloudGroup = new THREE.Group()
+  const cloudGeometries: THREE.BufferGeometry[] = []
   const cloudMaterial = new THREE.ShaderMaterial({
     vertexShader: cloudsVertexShader,
     fragmentShader: cloudsFragmentShader,
@@ -69,11 +71,13 @@ export const usePlanet = (scene: THREE.Scene) => {
   })
   
   // Shell texturing for cheap volumetric clouds
-  const cloudLayers = 5;
+  const cloudLayers = 3;
   for (let i = 0; i < cloudLayers; i++) {
-    // Radii from 1.015 to 1.035
-    const layerRadius = radius * (1.015 + i * 0.005);
+    // Keep the three shells that contribute visible volume; outer edge shells
+    // were fully faded by the shader but still paid for a complete draw.
+    const layerRadius = radius * (1.02 + i * 0.005);
     const cGeo = new THREE.SphereGeometry(layerRadius, widthSegments, heightSegments)
+    cloudGeometries.push(cGeo)
     const cMesh = new THREE.Mesh(cGeo, cloudMaterial)
     cloudGroup.add(cMesh)
   }
@@ -104,7 +108,8 @@ export const usePlanet = (scene: THREE.Scene) => {
   
   scene.add(planetGroup)
   
-  const update = (time: number, progress: number) => {
+  const update = (time: number, progress: number, viewSunAlignment = 0) => {
+    atmosphereMaterial.uniforms.uViewSunAlignment.value = viewSunAlignment
     // 1. Deterministic scroll-driven rotation (surface)
     // 240 degrees total rotation as we approach
     const targetRotation = progress * (240 * Math.PI / 180)
@@ -128,7 +133,7 @@ export const usePlanet = (scene: THREE.Scene) => {
     surfaceMaterial.dispose()
     atmosphereGeometry.dispose()
     atmosphereMaterial.dispose()
-    cloudGeometry.dispose()
+    for (const geometry of cloudGeometries) geometry.dispose()
     cloudMaterial.dispose()
     moonGeometry.dispose()
     moonMaterial.dispose()
