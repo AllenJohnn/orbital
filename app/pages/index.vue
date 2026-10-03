@@ -4,7 +4,8 @@
     <OrbitalIntro ref="introComponent" :style="{ opacity: Math.max(0, 1 - scrollProgress * 5), transform: `translateY(${-scrollProgress * 1000}px)` }" />
     
     <!-- Debug UI -->
-    <div class="fixed top-4 left-4 z-50 bg-black/80 text-white font-mono text-xs p-4 rounded leading-relaxed border border-white/20 pointer-events-none">
+    <div class="fixed top-4 left-4 z-50 bg-black/80 text-white font-mono text-xs p-4 rounded leading-relaxed border border-white/20 pointer-events-none transition-opacity duration-300"
+         :style="{ opacity: scrollProgress > 0.75 ? Math.max(0, 1 - (scrollProgress - 0.75) * 5) : 1 }">
       <div class="text-white/50 mb-2 border-b border-white/20 pb-1">ORBITAL TELEMETRY</div>
       <div>SCROLL: {{ scrollProgress.toFixed(3) }}</div>
       <div>CAMERA DISTANCE: {{ cameraDistance.toFixed(1) }}</div>
@@ -17,7 +18,7 @@
 
     <!-- Phase 02 UI -->
     <div class="phase-02-ui fixed inset-0 z-10 pointer-events-none flex flex-col justify-end p-12 transition-opacity duration-300"
-         :style="{ opacity: scrollProgress > 0.7 ? (scrollProgress - 0.7) * 3.33 : 0 }">
+         :style="{ opacity: scrollProgress > 0.7 && scrollProgress < 0.8 ? (scrollProgress - 0.7) * 10 : (scrollProgress >= 0.8 ? Math.max(0, 1 - (scrollProgress - 0.8) * 8) : 0) }">
       <div class="text-white">
         <div class="text-xs tracking-[0.4em] opacity-50 uppercase mb-2">Target Acquired</div>
         <div class="font-light tracking-[0.2em] text-xl opacity-90">KEPLER-186F</div>

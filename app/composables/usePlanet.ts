@@ -47,7 +47,7 @@ export const usePlanet = (scene: THREE.Scene) => {
     },
     transparent: true,
     blending: THREE.AdditiveBlending,
-    side: THREE.BackSide, 
+    side: THREE.DoubleSide, 
     depthWrite: false
   })
   
@@ -55,8 +55,7 @@ export const usePlanet = (scene: THREE.Scene) => {
   planetGroup.add(atmosphere) // Atmosphere does not need axial tilt
   
   // 3. Clouds
-  const cloudRadius = radius * 1.02
-  const cloudGeometry = new THREE.SphereGeometry(cloudRadius, widthSegments, heightSegments)
+  const cloudGroup = new THREE.Group()
   const cloudMaterial = new THREE.ShaderMaterial({
     vertexShader: cloudsVertexShader,
     fragmentShader: cloudsFragmentShader,
@@ -65,11 +64,21 @@ export const usePlanet = (scene: THREE.Scene) => {
       uSunDirection: { value: sunDirection }
     },
     transparent: true,
-    depthWrite: false
+    depthWrite: false,
+    side: THREE.DoubleSide // Ensure clouds are visible from inside
   })
   
-  const clouds = new THREE.Mesh(cloudGeometry, cloudMaterial)
-  planetRotationGroup.add(clouds) // Clouds spin with the planet
+  // Shell texturing for cheap volumetric clouds
+  const cloudLayers = 5;
+  for (let i = 0; i < cloudLayers; i++) {
+    // Radii from 1.015 to 1.035
+    const layerRadius = radius * (1.015 + i * 0.005);
+    const cGeo = new THREE.SphereGeometry(layerRadius, widthSegments, heightSegments)
+    const cMesh = new THREE.Mesh(cGeo, cloudMaterial)
+    cloudGroup.add(cMesh)
+  }
+  
+  planetRotationGroup.add(cloudGroup) // Clouds spin with the planet
   
   planetGroup.add(planetRotationGroup)
   
@@ -102,7 +111,7 @@ export const usePlanet = (scene: THREE.Scene) => {
     surface.rotation.y = targetRotation
     
     // Clouds rotate very slightly faster than the surface (e.g. 10% faster)
-    clouds.rotation.y = targetRotation * 1.1 
+    cloudGroup.rotation.y = targetRotation * 1.1
     
     // 2. Independent celestial motion (Moon)
     moon.rotation.y = time * 0.1 // Moon's own rotation

@@ -10,9 +10,29 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
   let camera: THREE.PerspectiveCamera
   let renderer: THREE.WebGLRenderer
   let composer: EffectComposer
+  let bloomPass: UnrealBloomPass
   let starParticles: THREE.Points
+  let sunSprite: THREE.Sprite
   let animationFrameId: number
   let planetController: ReturnType<typeof usePlanet> | null = null
+
+  const createStarTexture = () => {
+    // Generate a beautiful, realistic glowing star sprite
+    const canvas = document.createElement('canvas')
+    canvas.width = 256
+    canvas.height = 256
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      const gradient = ctx.createRadialGradient(128, 128, 0, 128, 128, 128)
+      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
+      gradient.addColorStop(0.1, 'rgba(255, 255, 255, 0.95)')
+      gradient.addColorStop(0.3, 'rgba(210, 230, 255, 0.4)')
+      gradient.addColorStop(1, 'rgba(0, 0, 0, 0)')
+      ctx.fillStyle = gradient
+      ctx.fillRect(0, 0, 256, 256)
+    }
+    return new THREE.CanvasTexture(canvas)
+  }
 
   const init = () => {
     if (!containerRef.value) return
@@ -29,7 +49,7 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     containerRef.value.appendChild(renderer.domElement)
 
     const renderScene = new RenderPass(scene, camera)
-    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85)
+    bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85)
     bloomPass.threshold = 0.95 // Restrict bloom strictly to the sun-facing highlights and bright city lights
     bloomPass.strength = 0.15  // Much more subtle, photographic bloom instead of heavy neon
     bloomPass.radius = 0.8     // Softer diffusion
@@ -39,6 +59,21 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     composer.addPass(bloomPass)
 
     createStarField()
+    
+    // Add the sun sprite
+    const sunMaterial = new THREE.SpriteMaterial({
+      map: createStarTexture(),
+      color: 0xffffff,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    })
+    sunSprite = new THREE.Sprite(sunMaterial)
+    // The sun is placed far away along the exact sun direction vector
+    const sunDir = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
+    sunSprite.position.copy(sunDir.clone().multiplyScalar(8000))
+    sunSprite.scale.set(600, 600, 1)
+    scene.add(sunSprite)
     
     planetController = usePlanet(scene)
 
@@ -149,9 +184,8 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     const p = scrollProgress.value
 
     // 1. Scene State Update from Scroll Progress
-    // We use the exponential curve suggested by the user for perfect perceptual scaling
     const startZ = 6000
-    const endZ = 550
+    const endZ = 404 // 4 units above the surface (low altitude hovering)
     
     // Apply a subtle ease to the raw progress so the very beginning and very end have soft tangents
     const easeProgress = p < 0.5 
@@ -161,23 +195,91 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     // distance = start * (end/start)^progress
     const currentZ = startZ * Math.pow(endZ / startZ, easeProgress)
     
+    // 1. Base position (straight on)
+    const basePos = new THREE.Vector3(
+      THREE.MathUtils.lerp(0, 40, easeProgress),
+      THREE.MathUtils.lerp(0, -15, easeProgress),
+      currentZ
+    )
+    
+    // 2. Eclipse trajectory
+    // We want to orbit from basePos around the origin to the shadow line
+    const sunDir = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
+    const shadowDir = sunDir.clone().negate()
+    
+    // Start orbiting significantly after p=0.5. p=0.88 is peak eclipse (camera aligns with shadowDir)
+    let orbitFactor = 0
+    if (p > 0.5) {
+      orbitFactor = THREE.MathUtils.smoothstep(p, 0.5, 0.88)
+    }
+    // Overshoot after 0.88 so the star re-emerges
+    let eclipseAngleProgress = 0
+    if (p <= 0.88) {
+      eclipseAngleProgress = orbitFactor
+    } else {
+      const postP = (p - 0.88) / 0.12
+      eclipseAngleProgress = 1.0 + postP * 0.2 
+    }
+
+    const startDir = new THREE.Vector3(0, 0, 1)
+    const rotationAxis = new THREE.Vector3().crossVectors(startDir, shadowDir).normalize()
+    const totalOrbitAngle = startDir.angleTo(shadowDir)
+    const currentOrbitAngle = eclipseAngleProgress * totalOrbitAngle
+    
+    const finalPos = basePos.clone().applyAxisAngle(rotationAxis, currentOrbitAngle)
+    
+    // Calculate actual geometric eclipse factor
+    const camToSun = sunDir.clone() // Sun is at infinity in sunDir
+    const camToPlanet = new THREE.Vector3(0,0,0).sub(finalPos).normalize()
+    const angleToSun = camToSun.angleTo(camToPlanet)
+    
+    // Safe angular radius (clamps length to avoid NaN if we somehow go inside the planet)
+    const safeLen = Math.max(finalPos.length(), 400.1)
+    const planetAngularRadius = Math.asin(400 / safeLen)
+    
+    // Smooth geometric occlusion:
+    // 1.0 when sun is well behind the planet
+    // 0.0 when sun is outside the planet's halo
+    const eclipseFactor = 1.0 - THREE.MathUtils.clamp(
+      (angleToSun - planetAngularRadius * 0.6) / (planetAngularRadius * 0.6), 
+      0, 1
+    )
+
     if (camera) {
-      camera.position.z = currentZ
+      camera.position.copy(finalPos)
       
-      // Cinematic lateral drift and banking
-      camera.position.x = THREE.MathUtils.lerp(0, 40, easeProgress)
-      camera.position.y = THREE.MathUtils.lerp(0, -15, easeProgress)
+      // Surface approach camera pitch transition
+      // We want to look at the center from orbit, but look toward the horizon at low altitude
+      const surfaceApproachProgress = THREE.MathUtils.clamp((p - 0.75) / 0.25, 0, 1)
+      const lookCenter = new THREE.Vector3(0, 0, 0)
       
-      camera.rotation.x = THREE.MathUtils.lerp(0, 0.05, easeProgress)
-      camera.rotation.y = THREE.MathUtils.lerp(0, -0.05, easeProgress)
-      camera.rotation.z = THREE.MathUtils.lerp(0, 0.03, easeProgress)
+      // Calculate a horizon target
+      const up = finalPos.clone().normalize()
+      // Create a forward vector that is perpendicular to 'up', pointing along our orbital path
+      const forward = new THREE.Vector3().crossVectors(up, rotationAxis).normalize()
+      // Look far ahead and slightly down
+      const lookHorizon = finalPos.clone().add(forward.multiplyScalar(1000)).sub(up.multiplyScalar(80))
       
-      // Dynamic FOV
-      const newFov = THREE.MathUtils.lerp(45, 65, easeProgress)
+      // Ease heavily at the very end
+      const lookEase = Math.pow(surfaceApproachProgress, 4.0)
+      const finalLookAt = lookCenter.clone().lerp(lookHorizon, lookEase * 0.95)
+      
+      camera.lookAt(finalLookAt)
+      
+      // Cinematic banking
+      camera.rotation.z += THREE.MathUtils.lerp(0, 0.05, easeProgress)
+      
+      // Dynamic FOV (wider as we get closer to emphasize scale)
+      const newFov = THREE.MathUtils.lerp(45, 80, easeProgress)
       if (Math.abs(camera.fov - newFov) > 0.1) {
         camera.fov = newFov
         camera.updateProjectionMatrix()
       }
+    }
+    
+    // Dynamically adjust bloom based on eclipse factor (less bloom when occluded)
+    if (bloomPass) {
+      bloomPass.strength = THREE.MathUtils.lerp(0.15, 0.02, eclipseFactor)
     }
 
     if (starParticles) {
@@ -185,18 +287,18 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
       starParticles.rotation.y += 0.0001
       starParticles.rotation.x += 0.00005
       
-      // Stars fade out as we get very close
+      // Stars fade out as we get very close, but reveal dramatically during deep eclipse
       const material = starParticles.material as THREE.ShaderMaterial
       if (material.uniforms) {
         material.uniforms.uTime.value = time
-        const starBrightness = THREE.MathUtils.lerp(1.0, 0.3, Math.pow(p, 4))
-        material.uniforms.uColor.value.setRGB(starBrightness, starBrightness, starBrightness)
+        const baseBrightness = THREE.MathUtils.lerp(1.0, 0.3, Math.pow(p, 4))
+        const eclipseBrightnessBoost = eclipseFactor * 1.5 // Reveal stars during eclipse
+        const finalBrightness = baseBrightness + eclipseBrightnessBoost
+        material.uniforms.uColor.value.setRGB(finalBrightness, finalBrightness, finalBrightness)
       }
     }
     
     if (planetController) {
-      // Add subtle cinematic tilt/reveal to the planet group itself
-      // (This is independent of the axial tilt of the surface mesh)
       if (planetController.planetGroup) {
         planetController.planetGroup.rotation.y = THREE.MathUtils.lerp(0, Math.PI / 6, easeProgress)
         planetController.planetGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI / 24, easeProgress)
@@ -227,6 +329,12 @@ export const useOrbitalScene = (containerRef: Ref<HTMLElement | null>, scrollPro
     if (starParticles) {
       starParticles.geometry.dispose()
       ;(starParticles.material as THREE.Material).dispose()
+    }
+    
+    if (sunSprite) {
+      const mat = sunSprite.material as THREE.SpriteMaterial
+      if (mat.map) mat.map.dispose()
+      mat.dispose()
     }
   }
 
