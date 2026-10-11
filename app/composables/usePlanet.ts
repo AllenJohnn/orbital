@@ -23,12 +23,12 @@ export const usePlanet = (scene: THREE.Scene) => {
     fragmentShader: planetFragmentShader,
     uniforms: {
       uTime: { value: 0 },
-      uSunDirection: { value: sunDirection }
+      uSunDirection: { value: sunDirection },
+      uCityLights: { value: 0 }
     }
   })
   
   const surface = new THREE.Mesh(geometry, surfaceMaterial)
-  planetGroup.add(surface)
   
   // Create a separate group for rotation so we can apply axial tilt
   const planetRotationGroup = new THREE.Group()
@@ -113,7 +113,7 @@ export const usePlanet = (scene: THREE.Scene) => {
   scene.add(planetGroup)
   
   const update = (time: number, progress: number, viewSunAlignment = 0) => {
-    atmosphereMaterial.uniforms.uViewSunAlignment.value = viewSunAlignment
+    if (atmosphereMaterial.uniforms.uViewSunAlignment) atmosphereMaterial.uniforms.uViewSunAlignment.value = viewSunAlignment
     // 1. Deterministic scroll-driven rotation (surface)
     // 240 degrees total rotation as we approach
     const targetRotation = progress * (240 * Math.PI / 180)
@@ -127,9 +127,9 @@ export const usePlanet = (scene: THREE.Scene) => {
     moonPivot.rotation.y = time * 0.015 // Slow, independent orbital motion
     
     // Shader uniforms (for fbm noise evolution)
-    surfaceMaterial.uniforms.uTime.value = time * 0.5 // Slow down surface terrain evolution
-    cloudMaterial.uniforms.uTime.value = time
-    moonMaterial.uniforms.uTime.value = time * 1.5
+    if (surfaceMaterial.uniforms.uTime) surfaceMaterial.uniforms.uTime.value = time * 0.5 // Slow down surface terrain evolution
+    if (cloudMaterial.uniforms.uTime) cloudMaterial.uniforms.uTime.value = time
+    if (moonMaterial.uniforms.uTime) moonMaterial.uniforms.uTime.value = time * 1.5
   }
 
   const precompileDetails = (renderer: THREE.WebGLRenderer, camera: THREE.Camera) => {

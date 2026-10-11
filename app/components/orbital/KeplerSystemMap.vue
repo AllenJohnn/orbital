@@ -16,7 +16,7 @@
           <svg class="orbit-lines" viewBox="0 0 620 620" aria-hidden="true">
             <ellipse class="habitable-zone" cx="310" cy="310" rx="235" ry="169" />
             <ellipse
-              v-for="world in kepler186System.worlds"
+              v-for="world in kepler186System.planets"
               :key="`orbit-${world.id}`"
               class="orbit-line"
               cx="310"
@@ -29,7 +29,7 @@
           </svg>
 
           <button
-            v-for="world in kepler186System.worlds"
+            v-for="world in kepler186System.planets"
             :key="world.id"
             class="world-marker"
             :class="{ selected: selectedWorldId === world.id, surveyed: world.surveyed }"
@@ -52,23 +52,23 @@
           <div class="eyebrow">{{ selectedWorld.surveyed ? 'SURVEY COMPLETE' : 'SIGNAL IDENTIFIED' }}</div>
           <h1>Kepler-186<span>{{ selectedWorld.id }}</span></h1>
           <p v-if="selectedWorld.surveyed" class="profile-copy">
-            The first surveyed world in the system, orbiting within its star's habitable zone. Surface conditions remain unknown.
+            {{ selectedWorld.blurb }}
           </p>
           <p v-else class="profile-copy">
             This world is mapped as a future destination. Its planetary chapter has not been surveyed yet.
           </p>
 
           <dl v-if="selectedWorld.surveyed" class="world-facts">
-            <div><dt>WORLD TYPE</dt><dd>SUPER-EARTH</dd></div>
-            <div><dt>ORBITAL PERIOD</dt><dd>129.9 DAYS</dd></div>
-            <div><dt>ORBITAL DISTANCE</dt><dd>0.432 AU</dd></div>
+            <div><dt>WORLD TYPE</dt><dd>{{ selectedWorld.worldType }}</dd></div>
+            <div><dt>ORBITAL PERIOD</dt><dd>{{ selectedWorld.periodDays?.toFixed(1) }} DAYS</dd></div>
+            <div><dt>ORBITAL DISTANCE</dt><dd>{{ selectedWorld.distanceAU?.toFixed(3) }} AU</dd></div>
           </dl>
           <p v-else class="signal-note">ORBIT CHARTED <span>／</span> TERRAIN UNKNOWN</p>
 
           <a
             v-if="selectedWorld.surveyed"
             class="source-link"
-            href="https://science.nasa.gov/exoplanet-catalog/kepler-186-f/"
+            :href="selectedWorld.nasaUrl"
             target="_blank"
             rel="noreferrer"
           >NASA EXOPLANET CATALOG ↗</a>
@@ -90,7 +90,8 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { kepler186System, type KeplerWorld } from '~/data/kepler186System'
+import { getSystem } from '~/data/systems'
+import type { Planet } from '~/types/atlas'
 
 defineProps<{
   progress: number
@@ -100,12 +101,13 @@ defineEmits<{
   'return-to-kepler': []
 }>()
 
-const selectedWorldId = ref<KeplerWorld['id']>('f')
+const kepler186System = getSystem('kepler-186')!
+const selectedWorldId = ref('f')
 const selectedWorld = computed(() =>
-  kepler186System.worlds.find((world) => world.id === selectedWorldId.value) ?? kepler186System.worlds[4]!
+  kepler186System.planets.find((world) => world.id === selectedWorldId.value) ?? kepler186System.planets[4]!
 )
 
-const worldPosition = (world: KeplerWorld) => {
+const worldPosition = (world: Planet) => {
   const radius = world.diagramRadius * 280
   const angle = world.diagramAngle
   const x = 310 + Math.cos(angle) * radius

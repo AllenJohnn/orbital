@@ -18,6 +18,7 @@ void main() {
 export const planetFragmentShader = `
 uniform vec3 uSunDirection;
 uniform float uTime;
+uniform float uCityLights;
 varying vec2 vUv;
 varying vec3 vNormalWorld;
 varying vec3 vNormalLocal;
@@ -449,7 +450,7 @@ void main() {
   // --------------------------------------------------------
   float cityVisibility = smoothstep(0.1, -0.1, terminator);
   
-  if (isLand > 0.5 && cityVisibility > 0.0 && coldMask < 0.2) {
+  if (uCityLights > 0.5 && isLand > 0.5 && cityVisibility > 0.0 && coldMask < 0.2) {
     float cityCluster = fbm(localNormal * 8.0);
     float cityDetail = fbm(localNormal * 35.0);
     

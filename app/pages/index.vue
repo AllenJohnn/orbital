@@ -6,7 +6,7 @@
       :scroll-progress="scrollProgress"
       class="sticky top-0 h-screen w-full"
     />
-    <OrbitalIntro ref="introComponent" :style="{ opacity: Math.max(0, 1 - scrollProgress * 5), transform: `translateY(${-scrollProgress * 1000}px)` }" />
+    <OrbitalIntro ref="introComponent" :style="prefersReducedMotion ? undefined : { opacity: Math.max(0, 1 - scrollProgress * 5), transform: `translateY(${-scrollProgress * 1000}px)` }" />
 
     <div
       class="fixed inset-0 z-10 pointer-events-none flex items-end p-8 md:p-12"
@@ -19,6 +19,12 @@
         <div class="text-xs tracking-[0.24em] opacity-50 mt-3">SYSTEM OVERVIEW AHEAD</div>
       </div>
     </div>
+
+    <div
+      v-if="scrollProgress > 0.22 && scrollProgress < TIMELINE.systemReveal"
+      class="fixed bottom-5 right-6 z-10 text-[0.55rem] tracking-[0.18em] text-white/40 uppercase md:bottom-8 md:right-10"
+      aria-label="Procedural artist’s impression. Surface conditions are unknown."
+    >Procedural artist’s impression · surface conditions unknown</div>
 
     <KeplerSystemMap :progress="systemMapProgress" @return-to-kepler="returnToKepler" />
     
@@ -44,6 +50,7 @@ import gsap from 'gsap'
 import OrbitalIntro from '~/components/orbital/OrbitalIntro.vue'
 import KeplerSystemMap from '~/components/orbital/KeplerSystemMap.vue'
 import { useLenis } from '~/composables/useLenis'
+import { TIMELINE } from '~/config/timeline'
 
 const OrbitalScene = defineAsyncComponent(() => import('~/components/orbital/OrbitalScene.vue'))
 
@@ -52,10 +59,17 @@ const introComponent = ref<InstanceType<typeof OrbitalIntro> | null>(null)
 const scrollProgress = ref(0)
 const sceneRequested = ref(false)
 const isDevelopment = import.meta.dev
-const systemMapProgress = computed(() => Math.max(0, Math.min(1, (scrollProgress.value - 0.68) / 0.32)))
+const prefersReducedMotion = ref(false)
+const systemMapProgress = computed(() => {
+  if (prefersReducedMotion.value) return scrollProgress.value > TIMELINE.systemReveal ? 1 : 0
+  return Math.max(0, Math.min(1, (scrollProgress.value - TIMELINE.systemReveal) / (1 - TIMELINE.systemReveal)))
+})
 const keplerOutroOpacity = computed(() => {
-  const enter = Math.max(0, Math.min(1, (scrollProgress.value - 0.53) / 0.06))
-  const leave = 1 - Math.max(0, Math.min(1, (scrollProgress.value - 0.64) / 0.04))
+  if (prefersReducedMotion.value) {
+    return scrollProgress.value >= TIMELINE.outroStart && scrollProgress.value < TIMELINE.systemReveal ? 1 : 0
+  }
+  const enter = Math.max(0, Math.min(1, (scrollProgress.value - TIMELINE.outroStart) / 0.06))
+  const leave = 1 - Math.max(0, Math.min(1, (scrollProgress.value - TIMELINE.outroEnd) / 0.04))
   return Math.min(enter, leave)
 })
 
@@ -66,6 +80,21 @@ const planetRotation = ref(0)
 const mainContainer = ref<HTMLElement | null>(null)
 
 const { lenis } = useLenis()
+
+useSeoMeta({
+  title: 'ORBITAL — A Journey Beyond The Known',
+  description: 'A cinematic, interactive field survey of Kepler-186f and its planetary system. Explore a procedural artist’s impression of a distant world.',
+  ogTitle: 'ORBITAL — A Journey Beyond The Known',
+  ogDescription: 'A cinematic field survey of the Kepler-186 system.',
+  ogType: 'website',
+  ogUrl: 'https://orbital0.vercel.app/',
+  ogImage: 'https://orbital0.vercel.app/orbital-poster.svg',
+  twitterCard: 'summary_large_image',
+  twitterTitle: 'ORBITAL — A Journey Beyond The Known',
+  twitterDescription: 'A cinematic field survey of the Kepler-186 system.',
+  twitterImage: 'https://orbital0.vercel.app/orbital-poster.svg'
+})
+useHead({ htmlAttrs: { lang: 'en' }, link: [{ rel: 'canonical', href: 'https://orbital0.vercel.app/' }] })
 
 // We'll update the telemetry variables in a fast interval or RAF
 let telemetryInterval: ReturnType<typeof setInterval> | undefined
@@ -100,7 +129,7 @@ const onScroll = () => {
 
 const returnToKepler = () => {
   const maxScroll = document.documentElement.scrollHeight - window.innerHeight
-  const target = maxScroll * 0.48
+  const target = maxScroll * TIMELINE.returnToPlanet
   if (lenis.value) {
     lenis.value.scrollTo(target, { immediate: true })
   } else {
@@ -109,6 +138,7 @@ const returnToKepler = () => {
 }
 
 onMounted(() => {
+  prefersReducedMotion.value = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   // Handle browser scroll restoration on refresh
   if (typeof history !== 'undefined' && 'scrollRestoration' in history) {
     history.scrollRestoration = 'manual'
@@ -119,7 +149,7 @@ onMounted(() => {
     sceneRequested.value = true
   }, 120)
   
-  ctx = gsap.context(() => {
+  if (!prefersReducedMotion.value) ctx = gsap.context(() => {
     // Initial State (Fade In from Black)
     gsap.from('.intro-content', {
       opacity: 0,
@@ -149,8 +179,10 @@ onMounted(() => {
     window.addEventListener('scroll', onScroll)
   }
   
-  updateTelemetry()
-  telemetryInterval = window.setInterval(updateTelemetry, 200)
+  if (isDevelopment) {
+    updateTelemetry()
+    telemetryInterval = window.setInterval(updateTelemetry, 200)
+  }
 })
 
 onBeforeUnmount(() => {

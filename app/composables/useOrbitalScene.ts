@@ -1,13 +1,16 @@
 import * as THREE from 'three'
 import type { Ref } from 'vue'
 import { usePlanet } from './usePlanet'
-import { kepler186System } from '~/data/kepler186System'
+import { getSystem } from '~/data/systems'
+import { TIMELINE } from '~/config/timeline'
 
-const SYSTEM_REVEAL_AT = 0.68
+const kepler186System = getSystem('kepler-186')!
+const SYSTEM_REVEAL_AT = TIMELINE.systemReveal
 
 export const useOrbitalScene = (
   containerRef: Ref<HTMLElement | null>,
-  scrollProgress: Ref<number>
+  scrollProgress: Ref<number>,
+  onUnavailable?: () => void
 ) => {
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
@@ -32,6 +35,7 @@ export const useOrbitalScene = (
   let lastFrameDelta = 0
   let lastProfileTime = 0
   let detailedPlanetCompileStarted = false
+  let reducedMotion = false
   let detailedPlanetCompileTimer: number | undefined
 
   const sunDir = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
@@ -210,7 +214,7 @@ export const useOrbitalScene = (
   const createSystemOverview = () => {
     systemMapGroup = new THREE.Group()
 
-    for (const world of kepler186System.worlds) {
+    for (const world of kepler186System.planets) {
       const orbitRadius = (world.diagramRadius / 0.84) * 8000
       const points: THREE.Vector3[] = []
       for (let i = 0; i < 192; i++) {
@@ -235,7 +239,7 @@ export const useOrbitalScene = (
       systemMapMaterials.push(orbitMaterial)
 
       if (!world.surveyed) {
-        const phase = world.diagramAngle - kepler186System.worlds[4]!.diagramAngle
+        const phase = world.diagramAngle - kepler186System.planets[4]!.diagramAngle
         const marker = new THREE.Mesh(
           new THREE.SphereGeometry(58, 16, 12),
           new THREE.MeshBasicMaterial({
@@ -305,7 +309,15 @@ export const useOrbitalScene = (
     camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 25000)
     camera.position.z = 6000
 
-    renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' })
+    reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' })
+    } catch (error) {
+      console.warn('ORBITAL WebGL is unavailable; showing the static scene poster.', error)
+      initialized = false
+      onUnavailable?.()
+      return
+    }
     pixelRatio = maxPixelRatio()
     renderer.setPixelRatio(pixelRatio)
     renderer.setSize(window.innerWidth, window.innerHeight)
@@ -411,7 +423,11 @@ export const useOrbitalScene = (
     previousFrameTime = timestamp
 
     const time = timestamp * 0.001
-    const p = scrollProgress.value
+    const rawProgress = scrollProgress.value
+    // Reduced-motion users move between a few stable scene poses instead of a continuous camera flight.
+    const p = reducedMotion
+      ? rawProgress < 0.2 ? 0 : rawProgress < 0.53 ? 0.48 : rawProgress < SYSTEM_REVEAL_AT ? 0.62 : 1
+      : rawProgress
     const journeyProgress = THREE.MathUtils.clamp(p / SYSTEM_REVEAL_AT, 0, 1)
     const systemProgress = THREE.MathUtils.clamp((p - SYSTEM_REVEAL_AT) / (1 - SYSTEM_REVEAL_AT), 0, 1)
     const systemEase = THREE.MathUtils.smoothstep(systemProgress, 0, 1)
@@ -496,23 +512,25 @@ export const useOrbitalScene = (
     }
 
     if (starParticles) {
-      starParticles.rotation.y += 0.0001
-      starParticles.rotation.x += 0.00005
+      if (!reducedMotion) {
+        starParticles.rotation.y += 0.0001
+        starParticles.rotation.x += 0.00005
+      }
       const material = starParticles.material as THREE.ShaderMaterial
       const baseBrightness = THREE.MathUtils.lerp(1.0, 0.3, Math.pow(p, 4))
       const brightness = baseBrightness + eclipseFactor * 1.5
-      material.uniforms.uColor.value.setRGB(brightness, brightness, brightness)
+      material.uniforms.uColor?.value.setRGB(brightness, brightness, brightness)
     }
 
     if (planetController) {
       planetController.planetGroup.rotation.y = THREE.MathUtils.lerp(0, Math.PI / 6, easeProgress)
       planetController.planetGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI / 24, easeProgress)
-      planetController.update(time, journeyProgress, alignmentEnvelope)
+      planetController.update(reducedMotion ? 0 : time, journeyProgress, alignmentEnvelope)
     }
 
     if (systemMapGroup) {
-      systemMapGroup.visible = p > SYSTEM_REVEAL_AT
-      setSystemMapOpacity(systemEase)
+      systemMapGroup.visible = rawProgress > SYSTEM_REVEAL_AT
+      setSystemMapOpacity(reducedMotion ? 1 : systemEase)
     }
 
     renderer.render(scene, camera)
