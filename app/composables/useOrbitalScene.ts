@@ -1,5 +1,6 @@
 import * as THREE from 'three'
-import type { Ref } from 'vue'
+import { watch, type Ref } from 'vue'
+import type { PlanetVisual } from '~/types/atlas'
 import { usePlanet } from './usePlanet'
 import { getSystem } from '~/data/systems'
 import { TIMELINE } from '~/config/timeline'
@@ -10,6 +11,7 @@ const SYSTEM_REVEAL_AT = TIMELINE.systemReveal
 export const useOrbitalScene = (
   containerRef: Ref<HTMLElement | null>,
   scrollProgress: Ref<number>,
+  planetVisualRef?: Ref<PlanetVisual | undefined> | (() => void),
   onUnavailable?: () => void
 ) => {
   let scene: THREE.Scene
@@ -315,7 +317,8 @@ export const useOrbitalScene = (
     } catch (error) {
       console.warn('ORBITAL WebGL is unavailable; showing the static scene poster.', error)
       initialized = false
-      onUnavailable?.()
+      const unavailableCallback = typeof planetVisualRef === 'function' ? planetVisualRef : onUnavailable
+      unavailableCallback?.()
       return
     }
     pixelRatio = maxPixelRatio()
@@ -354,7 +357,23 @@ export const useOrbitalScene = (
     glareSprite.renderOrder = 1000
     scene.add(glareSprite)
 
-    planetController = usePlanet(scene)
+    const visualRef: Ref<PlanetVisual | undefined> | undefined =
+      typeof planetVisualRef === 'function' ? undefined : planetVisualRef
+    const initialVisual = visualRef?.value ?? kepler186System.planets[4]?.visual
+    planetController = usePlanet(scene, initialVisual)
+
+    if (visualRef) {
+      watch(visualRef, (nextVisual) => {
+        if (!initialized || !planetController) return
+        const targetVisual = nextVisual ?? kepler186System.planets[4]?.visual
+        if (targetVisual) {
+          planetController.setVisual(targetVisual)
+          if (detailedPlanetCompileStarted) {
+            planetController.setDetailsVisible(true)
+          }
+        }
+      })
+    }
     window.addEventListener('resize', onWindowResize, { passive: true })
     document.addEventListener('visibilitychange', onVisibilityChange)
 
@@ -602,6 +621,7 @@ export const useOrbitalScene = (
   return {
     init,
     cleanup,
+    setVisual: (visual: PlanetVisual) => planetController?.setVisual(visual),
     get scene() { return scene },
     get camera() { return camera },
     get starParticles() { return starParticles },

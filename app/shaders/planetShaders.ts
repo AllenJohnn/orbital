@@ -19,6 +19,13 @@ export const planetFragmentShader = `
 uniform vec3 uSunDirection;
 uniform float uTime;
 uniform float uCityLights;
+uniform vec3 uPalette1;
+uniform vec3 uPalette2;
+uniform vec3 uPalette3;
+uniform float uOceanLevel;
+uniform float uIceAmount;
+uniform vec3 uAtmosphereColor;
+uniform float uAtmosphereThickness;
 varying vec2 vUv;
 varying vec3 vNormalWorld;
 varying vec3 vNormalLocal;
@@ -256,8 +263,8 @@ float getElevation(vec3 p, float distToCam) {
 
 // Surface Elevation Function (Handles Water Level & Waves)
 float getSurfaceElevationFromTerrain(vec3 p, float e, float distToCam) {
-  float seaLevel = 0.55;
-  if (e < seaLevel) {
+  float seaLevel = uOceanLevel;
+  if (uOceanLevel > 0.001 && e < seaLevel) {
     // Water surface: low-frequency swell + high-frequency micro ripples
     float swell = snoise(p * 25.0 + uTime * 0.01) * 0.0015;
     float ripples = 0.0;
@@ -326,15 +333,18 @@ void main() {
   // SATURN: Pale Golden Geology
   float goldenMask = smoothstep(0.3, 0.8, snoise(localNormal * 0.9 - biomeWarp + vec3(5.5)));
   // ICE CAPS (Use simple snoise instead of FBM to save instructions)
-  float coldMask = smoothstep(0.65, 0.95, abs(localNormal.y) + snoise(localNormal * 3.0) * 0.15);
+  float iceThreshold = 1.0 - uIceAmount;
+  float coldMask = uIceAmount > 0.001
+    ? smoothstep(iceThreshold, iceThreshold + 0.3, abs(localNormal.y) + snoise(localNormal * 3.0) * 0.15)
+    : 0.0;
   
-  float seaLevel = 0.55;
+  float seaLevel = uOceanLevel;
   vec3 albedo = vec3(0.0);
   float isLand = 0.0;
   float specular = 0.0;
   float diffuse = max(dot(finalNormal, sunDir), 0.0);
   
-  if (terrainElevation < seaLevel) {
+  if (uOceanLevel > 0.001 && terrainElevation < seaLevel) {
     // --------------------------------------------------------
     // EARTH: Deep Oceans & Shallow Coastlines
     // --------------------------------------------------------
@@ -356,7 +366,7 @@ void main() {
     // Fresnel response (Water reflects the sky at grazing angles)
     float waterFresnel = max(1.0 - dot(finalNormal, viewDir), 0.0);
     waterFresnel = pow(waterFresnel, 4.0);
-    vec3 skyReflection = vec3(0.3, 0.5, 0.8) * diffuse; // Reflecting the lit atmosphere
+    vec3 skyReflection = mix(vec3(0.3, 0.5, 0.8), uAtmosphereColor * 0.8, 0.25) * diffuse * uAtmosphereThickness;
     albedo = mix(albedo, skyReflection, waterFresnel * 0.7);
     
     // Crisp ocean specular glint
@@ -373,18 +383,18 @@ void main() {
     float h = smoothstep(seaLevel, 1.0, terrainElevation);
     
     // Biome 1: Mars (Iron / Rust / Basalt)
-    vec3 marsLow = vec3(0.45, 0.18, 0.10);
-    vec3 marsHigh = vec3(0.25, 0.08, 0.04);
+    vec3 marsLow = uPalette3;
+    vec3 marsHigh = uPalette3 * vec3(0.55, 0.44, 0.40);
     vec3 marsCol = mix(marsLow, marsHigh, h);
     
     // Biome 2: Pale Mineral Highlands (Gold / Cream)
-    vec3 goldLow = vec3(0.60, 0.50, 0.35);
-    vec3 goldHigh = vec3(0.75, 0.65, 0.50);
+    vec3 goldLow = uPalette2;
+    vec3 goldHigh = uPalette2 * vec3(1.25, 1.30, 1.42);
     vec3 goldCol = mix(goldLow, goldHigh, h);
     
     // Biome 3: Dark Alien Rock (Charcoal / Deep Brown)
-    vec3 alienLow = vec3(0.10, 0.09, 0.08);
-    vec3 alienHigh = vec3(0.18, 0.16, 0.15);
+    vec3 alienLow = uPalette1;
+    vec3 alienHigh = uPalette1 * vec3(1.8, 1.77, 1.87);
     vec3 alienCol = mix(alienLow, alienHigh, h);
     
     float landSpec = 0.0;
@@ -401,13 +411,13 @@ void main() {
     
     // Coastal sand/sediment
     vec3 coastLine = mix(vec3(0.25, 0.22, 0.18), vec3(0.1, 0.05, 0.02), mineralMask);
-    float isCoast = smoothstep(seaLevel + 0.04, seaLevel, terrainElevation);
+    float isCoast = uOceanLevel > 0.001 ? smoothstep(seaLevel + 0.04, seaLevel, terrainElevation) : 0.0;
     albedo = mix(albedo, coastLine, isCoast);
     landSpec = mix(landSpec, 0.1, isCoast); // Wet sand is slightly specular
     
     // Polar Ice
     vec3 ice = vec3(0.82, 0.88, 0.95);
-    float isIce = coldMask * smoothstep(seaLevel + 0.02, seaLevel + 0.2, terrainElevation);
+    float isIce = coldMask * (uOceanLevel > 0.001 ? smoothstep(seaLevel + 0.02, seaLevel + 0.2, terrainElevation) : 1.0);
     albedo = mix(albedo, ice, isIce);
     landSpec = mix(landSpec, 0.8, isIce); // Ice is highly reflective
     
@@ -434,12 +444,12 @@ void main() {
   vec3 warmScatter = vec3(1.0, 0.45, 0.15); // Deep orange/red
   // Broader, stronger scattering on the daylight side to restore the physical warm glaze
   float warmMask = pow(fresnel, 2.5) * smoothstep(-0.2, 0.6, terminator);
-  finalColor += warmScatter * warmMask * 0.8;
+  finalColor += warmScatter * warmMask * 0.8 * uAtmosphereThickness;
   
   // Cool / Blue atmospheric scattering on the grazing angles near the terminator / night
-  vec3 coolScatter = vec3(0.15, 0.4, 0.9);
+  vec3 coolScatter = uAtmosphereColor * vec3(0.36, 0.65, 0.90);
   float coolMask = pow(fresnel, 4.0) * smoothstep(0.2, -0.6, terminator);
-  finalColor += coolScatter * coolMask * 0.4;
+  finalColor += coolScatter * coolMask * 0.4 * uAtmosphereThickness;
   
   // Subtle night-side environmental fill (so dark side isn't pure black, preserving terrain readability)
   vec3 nightAmbient = albedo * vec3(0.04, 0.06, 0.1); 
@@ -482,6 +492,7 @@ void main() {
 export const atmosphereFragmentShader = `
 uniform vec3 uSunDirection;
 uniform vec3 uAtmosphereColor;
+uniform float uAtmosphereThickness;
 uniform float uViewSunAlignment;
 varying vec3 vNormalWorld;
 varying vec3 vPositionWorld;
@@ -545,7 +556,7 @@ void main() {
   
   // Modulate intensity slightly based on camera distance (thicker atmosphere when far away)
   float distFactor = smoothstep(150.0, 2000.0, distToCam);
-  finalScatterColor *= mix(0.5, 1.0, distFactor);
+  finalScatterColor *= mix(0.5, 1.0, distFactor) * uAtmosphereThickness;
   
   // Output additive RGB
   gl_FragColor = vec4(finalScatterColor, 1.0);
@@ -570,6 +581,7 @@ void main() {
 export const cloudsFragmentShader = `
 uniform vec3 uSunDirection;
 uniform float uTime;
+uniform float uCloudCover;
 varying vec2 vUv;
 varying vec3 vNormalWorld;
 varying vec3 vNormalLocal;
@@ -597,8 +609,9 @@ void main() {
   float density = largeClouds * 0.55 + mediumClouds * 0.3 + wispyClouds * 0.1 - microClouds * 0.05;
   
   // Soft thresholds for natural edge transparency
-  float coverage = smoothstep(0.45, 0.75, density);
-  float thickClouds = smoothstep(0.65, 0.95, density);
+  float coverageEdge = 1.0 - uCloudCover;
+  float coverage = smoothstep(coverageEdge, coverageEdge + 0.30, density);
+  float thickClouds = smoothstep(coverageEdge + 0.20, coverageEdge + 0.50, density);
   
   // Altitude fade: hide shell boundaries by fading density at the top and bottom of the volume
   float altitude = length(vPositionWorld) - 400.0; // Cloud layer is roughly 406 to 414

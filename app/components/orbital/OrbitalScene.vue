@@ -12,17 +12,25 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, toRef } from 'vue'
 import { useOrbitalScene } from '~/composables/useOrbitalScene'
+import type { PlanetVisual } from '~/types/atlas'
 
 const props = defineProps<{
   scrollProgress: number
+  planetVisual?: PlanetVisual
 }>()
 const sceneContainer = ref<HTMLElement | null>(null)
 const webglUnavailable = ref(false)
 const progressRef = toRef(props, 'scrollProgress')
+const visualRef = toRef(props, 'planetVisual')
 
-const orbital = useOrbitalScene(sceneContainer, progressRef, () => {
-  webglUnavailable.value = true
-})
+const orbital = useOrbitalScene(
+  sceneContainer,
+  progressRef,
+  visualRef,
+  () => {
+    webglUnavailable.value = true
+  }
+)
 
 onMounted(() => {
   orbital.init()

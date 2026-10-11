@@ -19,10 +19,22 @@ export const kepler186: System = {
     {
       id: 'b', name: 'Kepler-186b', radiusEarth: 1.07, massEarth: 1.24,
       periodDays: 3.8867907, distanceAU: 0.0343, equilibriumTempK: 571,
-      worldType: 'UNKNOWN', inHabitableZone: false, surveyed: false,
+      worldType: 'ROCKY', inHabitableZone: false, surveyed: false,
       blurb: 'A compact inner orbit around the system’s red dwarf. Surface conditions remain unknown.',
       nasaUrl: 'https://exoplanetarchive.ipac.caltech.edu/overview/Kepler-186%20b',
-      diagramRadius: 0.23, diagramAngle: -2.45, markerColor: '#a6b7c8'
+      diagramRadius: 0.23, diagramAngle: -2.45, markerColor: '#a6b7c8',
+      visual: {
+        palette: ['#12100e', '#3d2b1f', '#6e381e'],
+        oceanLevel: 0,
+        cloudCover: 0,
+        iceAmount: 0,
+        atmosphereColor: '#ff7a38',
+        atmosphereThickness: 0,
+        cityLights: false,
+        hasMoon: false,
+        axialTiltDeg: 3,
+        rotationSpeed: 1.4
+      }
     },
     {
       id: 'c', name: 'Kepler-186c', radiusEarth: 1.25, massEarth: 2.1,
@@ -35,10 +47,22 @@ export const kepler186: System = {
     {
       id: 'd', name: 'Kepler-186d', radiusEarth: 1.4, massEarth: 2.54,
       periodDays: 13.342996, distanceAU: 0.0781, equilibriumTempK: 379,
-      worldType: 'UNKNOWN', inHabitableZone: false, surveyed: false,
+      worldType: 'SUPER-EARTH', inHabitableZone: false, surveyed: false,
       blurb: 'One of five known planets in the Kepler-186 system. Surface conditions remain unknown.',
       nasaUrl: 'https://exoplanetarchive.ipac.caltech.edu/overview/Kepler-186%20d',
-      diagramRadius: 0.51, diagramAngle: 0.2, markerColor: '#cf8969'
+      diagramRadius: 0.51, diagramAngle: 0.2, markerColor: '#cf8969',
+      visual: {
+        palette: ['#141d24', '#3d5262', '#728d9f'],
+        oceanLevel: 0.42,
+        cloudCover: 0.65,
+        iceAmount: 0.85,
+        atmosphereColor: '#78baff',
+        atmosphereThickness: 1.25,
+        cityLights: false,
+        hasMoon: true,
+        axialTiltDeg: 28,
+        rotationSpeed: 0.85
+      }
     },
     {
       id: 'e', name: 'Kepler-186e', radiusEarth: 1.27, massEarth: 2.15,
@@ -56,10 +80,16 @@ export const kepler186: System = {
       nasaUrl: 'https://exoplanetarchive.ipac.caltech.edu/overview/Kepler-186%20f',
       diagramRadius: 0.84, diagramAngle: 3.38, markerColor: '#f0bb75',
       visual: {
-        palette: ['#172331', '#b28b61', '#d86e43'], oceanLevel: 0.48,
-        cloudCover: 0.42, iceAmount: 0.12, atmosphereColor: '#6a9dff',
-        atmosphereThickness: 1, cityLights: false, hasMoon: true,
-        axialTiltDeg: 15, rotationSpeed: 1
+        palette: ['#1a1714', '#998059', '#732e1a'],
+        oceanLevel: 0.55,
+        cloudCover: 0.55,
+        iceAmount: 0.35,
+        atmosphereColor: '#6a9dff',
+        atmosphereThickness: 1,
+        cityLights: false,
+        hasMoon: true,
+        axialTiltDeg: 15,
+        rotationSpeed: 1
       }
     }
   ]

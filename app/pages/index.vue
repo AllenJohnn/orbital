@@ -4,6 +4,7 @@
       v-if="sceneRequested"
       ref="sceneComponent"
       :scroll-progress="scrollProgress"
+      :planet-visual="activeVisual"
       class="sticky top-0 h-screen w-full"
     />
     <OrbitalIntro ref="introComponent" :style="prefersReducedMotion ? undefined : { opacity: Math.max(0, 1 - scrollProgress * 5), transform: `translateY(${-scrollProgress * 1000}px)` }" />
@@ -15,7 +16,7 @@
     >
       <div class="text-white">
         <div class="text-xs tracking-[0.4em] opacity-60 uppercase mb-3">Field Survey Complete</div>
-        <div class="font-light tracking-[0.16em] text-2xl md:text-3xl opacity-95">KEPLER-186F</div>
+        <div class="font-light tracking-[0.16em] text-2xl md:text-3xl opacity-95">KEPLER-186{{ activePlanet.id.toUpperCase() }}</div>
         <div class="text-xs tracking-[0.24em] opacity-50 mt-3">SYSTEM OVERVIEW AHEAD</div>
       </div>
     </div>
@@ -26,12 +27,13 @@
       aria-label="Procedural artist’s impression. Surface conditions are unknown."
     >Procedural artist’s impression · surface conditions unknown</div>
 
-    <KeplerSystemMap :progress="systemMapProgress" @return-to-kepler="returnToKepler" />
+    <KeplerSystemMap :progress="systemMapProgress" :initial-world-id="activePlanet.id" @return-to-kepler="returnToKepler" />
     
     <!-- Debug UI -->
     <div v-if="isDevelopment && scrollProgress < 0.6" class="fixed top-4 left-4 z-50 bg-black/80 text-white font-mono text-xs p-4 rounded leading-relaxed border border-white/20 pointer-events-none transition-opacity duration-300"
          :style="{ opacity: scrollProgress > 0.75 ? Math.max(0, 1 - (scrollProgress - 0.75) * 5) : 1 }">
       <div class="text-white/50 mb-2 border-b border-white/20 pb-1">ORBITAL TELEMETRY</div>
+      <div>PLANET: KEPLER-186{{ activePlanet.id.toUpperCase() }}</div>
       <div>SCROLL: {{ scrollProgress.toFixed(3) }}</div>
       <div>CAMERA DISTANCE: {{ cameraDistance.toFixed(1) }}</div>
       <div>PLANET RADIUS: 400</div>
@@ -46,13 +48,35 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, ref, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute } from 'vue-router'
 import gsap from 'gsap'
 import OrbitalIntro from '~/components/orbital/OrbitalIntro.vue'
 import KeplerSystemMap from '~/components/orbital/KeplerSystemMap.vue'
 import { useLenis } from '~/composables/useLenis'
 import { TIMELINE } from '~/config/timeline'
+import { getSystem } from '~/data/systems'
 
 const OrbitalScene = defineAsyncComponent(() => import('~/components/orbital/OrbitalScene.vue'))
+
+const route = useRoute()
+const kepler186System = getSystem('kepler-186')!
+
+const activePlanetId = computed(() => {
+  const queryPlanet = route.query.planet
+  if (typeof queryPlanet === 'string' && queryPlanet.trim()) {
+    return queryPlanet.trim().toLowerCase()
+  }
+  return 'f'
+})
+
+const activePlanet = computed(() => {
+  return (
+    kepler186System.planets.find((planet) => planet.id === activePlanetId.value) ??
+    kepler186System.planets[4]!
+  )
+})
+
+const activeVisual = computed(() => activePlanet.value.visual)
 
 const sceneComponent = ref<InstanceType<typeof OrbitalScene> | null>(null)
 const introComponent = ref<InstanceType<typeof OrbitalIntro> | null>(null)

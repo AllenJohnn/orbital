@@ -89,12 +89,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { getSystem } from '~/data/systems'
 import type { Planet } from '~/types/atlas'
 
-defineProps<{
+const props = defineProps<{
   progress: number
+  initialWorldId?: string
 }>()
 
 defineEmits<{
@@ -102,7 +103,10 @@ defineEmits<{
 }>()
 
 const kepler186System = getSystem('kepler-186')!
-const selectedWorldId = ref('f')
+const selectedWorldId = ref(props.initialWorldId ?? 'f')
+watch(() => props.initialWorldId, (nextId) => {
+  if (nextId) selectedWorldId.value = nextId
+})
 const selectedWorld = computed(() =>
   kepler186System.planets.find((world) => world.id === selectedWorldId.value) ?? kepler186System.planets[4]!
 )
