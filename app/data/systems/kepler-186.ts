@@ -11,7 +11,7 @@ export const kepler186: System = {
   starRadiusSolar: 0.52,
   distanceLY: 579.3,
   discoveredYear: 2014,
-  habitableZone: null,
+  habitableZone: { innerAU: 0.36, outerAU: 0.53, diagramInnerRadius: 0.74, diagramOuterRadius: 0.94 },
   status: 'SURVEYED',
   atlasPosition: { x: 0, y: 0, z: 0 },
   intro: 'A quiet red dwarf system. One world has a completed visual survey.',

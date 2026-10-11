@@ -56,7 +56,12 @@ export interface System {
   starRadiusSolar: number | null
   distanceLY: number | null
   discoveredYear?: number
-  habitableZone: { innerAU: number; outerAU: number } | null
+  habitableZone: {
+    innerAU: number
+    outerAU: number
+    diagramInnerRadius?: number
+    diagramOuterRadius?: number
+  } | null
   planets: Planet[]
   status: 'SURVEYED' | 'SIGNAL IDENTIFIED' | 'LOCKED'
   atlasPosition: { x: number; y: number; z: number }

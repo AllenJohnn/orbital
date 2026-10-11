@@ -27,7 +27,7 @@
       aria-label="Procedural artist’s impression. Surface conditions are unknown."
     >Procedural artist’s impression · surface conditions unknown</div>
 
-    <KeplerSystemMap :progress="systemMapProgress" :initial-world-id="activePlanet.id" @return-to-kepler="returnToKepler" />
+    <SystemMap :system="kepler186System" :progress="systemMapProgress" :initial-world-id="activePlanet.id" @return-to-kepler="returnToKepler" />
     
     <!-- Debug UI -->
     <div v-if="isDevelopment && scrollProgress < 0.6" class="fixed top-4 left-4 z-50 bg-black/80 text-white font-mono text-xs p-4 rounded leading-relaxed border border-white/20 pointer-events-none transition-opacity duration-300"
@@ -51,7 +51,7 @@ import { computed, defineAsyncComponent, ref, onMounted, onBeforeUnmount } from 
 import { useRoute } from 'vue-router'
 import gsap from 'gsap'
 import OrbitalIntro from '~/components/orbital/OrbitalIntro.vue'
-import KeplerSystemMap from '~/components/orbital/KeplerSystemMap.vue'
+import SystemMap from '~/components/orbital/SystemMap.vue'
 import { useLenis } from '~/composables/useLenis'
 import { TIMELINE } from '~/config/timeline'
 import { getSystem } from '~/data/systems'
