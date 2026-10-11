@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { watch, type Ref } from 'vue'
-import type { PlanetVisual } from '~/types/atlas'
+import type { PlanetVisual, System } from '~/types/atlas'
 import { usePlanet } from './usePlanet'
 import { getSystem } from '~/data/systems'
 import { TIMELINE } from '~/config/timeline'
@@ -13,7 +13,8 @@ export const useOrbitalScene = (
   scrollProgress: Ref<number>,
   planetVisualRef?: Ref<PlanetVisual | undefined> | (() => void),
   onUnavailable?: () => void,
-  starColorRef?: Ref<string | undefined>
+  starColorRef?: Ref<string | undefined>,
+  systemRef?: Ref<System | undefined>
 ) => {
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
@@ -241,10 +242,20 @@ export const useOrbitalScene = (
     scene.add(starParticles)
   }
 
-  const createSystemOverview = () => {
+  const createSystemOverview = (targetSystem?: System) => {
+    if (systemMapGroup) {
+      scene.remove(systemMapGroup)
+      systemMapGroup.traverse((object) => {
+        if (object instanceof THREE.Mesh || object instanceof THREE.Line) object.geometry.dispose()
+      })
+      for (const material of systemMapMaterials) material.dispose()
+      systemMapMaterials = []
+    }
+
+    const currentSys = targetSystem ?? systemRef?.value ?? kepler186System
     systemMapGroup = new THREE.Group()
 
-    for (const world of kepler186System.planets) {
+    for (const world of currentSys.planets) {
       const orbitRadius = (world.diagramRadius / 0.84) * 8000
       const points: THREE.Vector3[] = []
       for (let i = 0; i < 192; i++) {
@@ -269,11 +280,12 @@ export const useOrbitalScene = (
       systemMapMaterials.push(orbitMaterial)
 
       if (!world.surveyed) {
-        const phase = world.diagramAngle - kepler186System.planets[4]!.diagramAngle
+        const referencePlanet = currentSys.planets.find((p) => p.surveyed) ?? currentSys.planets[0]
+        const phase = world.diagramAngle - (referencePlanet?.diagramAngle ?? 0)
         const marker = new THREE.Mesh(
           new THREE.SphereGeometry(58, 16, 12),
           new THREE.MeshBasicMaterial({
-            color: new THREE.Color(world.markerColor),
+            color: new THREE.Color(world.markerColor ?? '#8faec7'),
             transparent: true,
             opacity: 0,
             depthWrite: false
@@ -396,6 +408,15 @@ export const useOrbitalScene = (
       watch(starColorRef, (newColor) => {
         if (newColor) setStarColor(newColor)
       }, { immediate: true })
+    }
+
+    if (systemRef) {
+      watch(systemRef, (newSys) => {
+        if (newSys && initialized) {
+          createSystemOverview(newSys)
+          if (newSys.starColor) setStarColor(newSys.starColor)
+        }
+      })
     }
 
     const visualRef: Ref<PlanetVisual | undefined> | undefined =

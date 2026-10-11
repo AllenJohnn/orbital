@@ -11,14 +11,15 @@
       :scroll-progress="localProgress"
       :planet-visual="activeVisual"
       :star-color="activeSystem.starColor"
+      :system="activeSystem"
       class="sticky top-0 h-screen w-full"
     />
 
     <!-- Chapter 0 Intro Screen -->
     <OrbitalIntro
-      v-if="activeChapterIndex === 0"
+      v-if="activeChapterIndex === 0 && localProgress < 0.25"
       ref="introComponent"
-      :style="prefersReducedMotion ? undefined : { opacity: Math.max(0, 1 - scrollProgress * 5), transform: `translateY(${-scrollProgress * 1000}px)` }"
+      :style="prefersReducedMotion ? undefined : { opacity: Math.max(0, 1 - localProgress * 4), transform: `translateY(${-localProgress * 800}px)` }"
     />
 
     <!-- Blackout Overlay during Warp Out and Approach Entrance -->
@@ -80,6 +81,7 @@
       @return-to-planet="returnToCurrentPlanet"
       @return-to-kepler="returnToCurrentPlanet"
       @return-to-start="returnToStart"
+      @next-system="handleNextSystem"
     />
 
     <!-- Telemetry Debug UI -->
@@ -126,7 +128,7 @@ const cameraDistance = ref(6000)
 const cameraFov = ref(45)
 const planetRotation = ref(0)
 
-const { lenis } = useLenis()
+const { lenis, resize: resizeLenis } = useLenis()
 
 // Map global scroll to { chapterIndex, localProgress }
 const chapterState = computed(() => mapGlobalScrollToChapter(scrollProgress.value, chapterHeights))
@@ -143,27 +145,26 @@ const blackoutOpacity = computed(() => {
   const isLast = activeChapterIndex.value === chapters.length - 1
 
   // End of chapter warp fade out
-  if (!isLast && p >= (prefersReducedMotion.value ? 0.92 : 0.95)) {
-    const start = prefersReducedMotion.value ? 0.92 : 0.95
+  if (!isLast && p >= (prefersReducedMotion.value ? 0.90 : 0.93)) {
+    const start = prefersReducedMotion.value ? 0.90 : 0.93
     return Math.min(1, Math.max(0, (p - start) / (1 - start)))
   }
 
   // Beginning of next chapter fade in
-  if (activeChapterIndex.value > 0 && p <= 0.06) {
-    return Math.min(1, Math.max(0, 1 - p / 0.06))
+  if (activeChapterIndex.value > 0 && p <= 0.07) {
+    return Math.min(1, Math.max(0, 1 - p / 0.07))
   }
 
   return 0
 })
 
-// Inter-system title card during black frame between different systems
+// Inter-system title card during deep-space warp frame between different systems
 const interSystemTitleCard = computed(() => {
-  // Between Kepler-186d (ch 2) and TRAPPIST-1e (ch 3)
-  if (activeChapterIndex.value === 2 && localProgress.value >= 0.96) {
-    return chapters[3]?.system ?? null
+  if (activeChapterIndex.value === 0 && localProgress.value >= 0.94) {
+    return chapters[1]?.system ?? null
   }
-  if (activeChapterIndex.value === 3 && localProgress.value <= 0.04) {
-    return chapters[3]?.system ?? null
+  if (activeChapterIndex.value === 1 && localProgress.value <= 0.06) {
+    return chapters[1]?.system ?? null
   }
   return null
 })
@@ -214,13 +215,34 @@ watch(activeChapterIndex, () => {
 })
 
 // Navigation Actions
+const scrollToChapterIndex = (idx: number, immediate = false) => {
+  const targetProgress = getGlobalScrollForChapter(idx, 0, chapterHeights)
+  const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight)
+  const targetY = targetProgress * maxScroll
+  scrollProgress.value = targetProgress
+  if (lenis.value) {
+    lenis.value.scrollTo(targetY, { immediate })
+  } else {
+    if (immediate) {
+      window.scrollTo(0, targetY)
+    } else {
+      window.scrollTo({ top: targetY, behavior: 'smooth' })
+    }
+  }
+}
+
+const handleNextSystem = () => {
+  const nextIdx = (activeChapterIndex.value + 1) % chapters.length
+  scrollToChapterIndex(nextIdx, false)
+}
+
 const returnToCurrentPlanet = () => {
   const targetProgress = getGlobalScrollForChapter(
     activeChapterIndex.value,
     TIMELINE.returnToPlanet,
     chapterHeights
   )
-  const maxScroll = document.documentElement.scrollHeight - window.innerHeight
+  const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight)
   const targetY = targetProgress * maxScroll
   if (lenis.value) {
     lenis.value.scrollTo(targetY, { immediate: false })
@@ -256,12 +278,12 @@ const updateTelemetry = () => {
 
 const onScroll = () => {
   let progress = 0
-  if (lenis.value) {
+  const scrollY = window.scrollY
+  const maxScroll = document.documentElement.scrollHeight - window.innerHeight
+  if (lenis.value && lenis.value.limit > 0) {
     progress = lenis.value.progress
-  } else {
-    const scrollY = window.scrollY
-    const maxScroll = document.documentElement.scrollHeight - window.innerHeight
-    progress = maxScroll > 0 ? scrollY / maxScroll : 0
+  } else if (maxScroll > 0) {
+    progress = scrollY / maxScroll
   }
   scrollProgress.value = Math.max(0, Math.min(1, progress))
 }
@@ -288,31 +310,45 @@ onMounted(() => {
     history.scrollRestoration = 'manual'
   }
 
-  // Handle Initial Route Query (?system=...&planet=...)
-  const querySystem = route.query.system as string | undefined
-  const queryPlanet = route.query.planet as string | undefined
-  const initialIdx = findChapterIndex(querySystem, queryPlanet)
+  // Always bind window scroll as reliable fallback and sync
+  window.addEventListener('scroll', onScroll, { passive: true })
+  if (lenis.value) {
+    lenis.value.on('scroll', onScroll)
+  }
 
-  const setupScroll = () => {
+  // Handle Initial Route Query (?system=...&planet=...)
+  const setupInitialScroll = () => {
+    resizeLenis()
+    const querySystem = route.query.system as string | undefined
+    const queryPlanet = route.query.planet as string | undefined
+    const initialIdx = findChapterIndex(querySystem, queryPlanet)
+
     if (initialIdx > 0) {
-      const targetProgress = getGlobalScrollForChapter(initialIdx, 0, chapterHeights)
-      const maxScroll = document.documentElement.scrollHeight - window.innerHeight
-      const targetY = targetProgress * maxScroll
-      window.scrollTo(0, targetY)
-      scrollProgress.value = targetProgress
-      if (lenis.value) {
-        lenis.value.scrollTo(targetY, { immediate: true })
-      }
+      scrollToChapterIndex(initialIdx, true)
     } else {
       window.scrollTo(0, 0)
+      if (lenis.value) {
+        lenis.value.scrollTo(0, { immediate: true })
+      }
       scrollProgress.value = 0
     }
   }
 
   // Execute scroll positioning after DOM layout settles
   window.requestAnimationFrame(() => {
-    setupScroll()
+    setupInitialScroll()
   })
+
+  // Watch for route query changes from client-side navigation
+  watch(
+    () => [route.query.system, route.query.planet],
+    ([sys, pl]) => {
+      const targetIdx = findChapterIndex(sys as string | undefined, pl as string | undefined)
+      if (targetIdx !== activeChapterIndex.value) {
+        scrollToChapterIndex(targetIdx, false)
+      }
+    }
+  )
 
   sceneLoadTimer = window.setTimeout(() => {
     sceneRequested.value = true
@@ -342,12 +378,6 @@ onMounted(() => {
     })
   }
 
-  if (lenis.value) {
-    lenis.value.on('scroll', onScroll)
-  } else {
-    window.addEventListener('scroll', onScroll, { passive: true })
-  }
-
   if (isDevelopment) {
     updateTelemetry()
     telemetryInterval = window.setInterval(updateTelemetry, 200)
@@ -356,10 +386,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (ctx) ctx.revert()
+  window.removeEventListener('scroll', onScroll)
   if (lenis.value) {
     lenis.value.off('scroll', onScroll)
-  } else {
-    window.removeEventListener('scroll', onScroll)
   }
   if (telemetryInterval) window.clearInterval(telemetryInterval)
   if (sceneLoadTimer) window.clearTimeout(sceneLoadTimer)

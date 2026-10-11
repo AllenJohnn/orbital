@@ -6,8 +6,10 @@
       :system="system"
       :progress="1"
       :initial-world-id="initialWorldId"
-      :show-return-button="system.slug === 'kepler-186'"
+      :show-return-button="true"
       @return-to-kepler="returnToOrigin"
+      @return-to-planet="returnToOrigin"
+      @next-system="handleNextSystem"
     />
 
     <!-- Themed 404: Signal Not Found -->
@@ -80,7 +82,21 @@ const initialWorldId = computed(() => {
 })
 
 const returnToOrigin = () => {
-  void router.push({ path: '/', query: { planet: 'f' } })
+  const isTrappist = system.value?.slug === 'trappist-1'
+  const pl = initialWorldId.value ?? (isTrappist ? 'e' : 'f')
+  if (isTrappist) {
+    void router.push({ path: '/', query: { system: 'trappist-1', planet: pl } })
+  } else {
+    void router.push({ path: '/', query: { planet: pl } })
+  }
+}
+
+const handleNextSystem = () => {
+  if (system.value?.slug === 'kepler-186') {
+    void router.push('/system/trappist-1')
+  } else {
+    void router.push('/system/kepler-186')
+  }
 }
 
 useSeoMeta({

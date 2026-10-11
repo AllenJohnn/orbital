@@ -18,12 +18,10 @@ export interface Chapter {
 
 /**
  * Ordered sequence of survey chapters:
- * kepler-186/f -> kepler-186/b -> kepler-186/d -> trappist-1/e
+ * kepler-186/f (Mission 001) -> trappist-1/e (Mission 002)
  */
 export const chapterOrder: readonly ChapterKey[] = [
   { systemSlug: 'kepler-186', planetId: 'f' },
-  { systemSlug: 'kepler-186', planetId: 'b' },
-  { systemSlug: 'kepler-186', planetId: 'd' },
   { systemSlug: 'trappist-1', planetId: 'e' }
 ] as const
 
@@ -43,7 +41,7 @@ export const chapters: Chapter[] = chapterOrder
       system,
       planet,
       visual: planet.visual,
-      heightVh: index === 0 ? 800 : 500
+      heightVh: 800
     }
   })
   .filter((c): c is Chapter => c !== null)
@@ -53,10 +51,12 @@ export const totalChaptersHeightVh = chapters.reduce((sum, ch) => sum + ch.heigh
 export const getChapter = (index: number): Chapter | undefined => chapters[index]
 
 export const findChapterIndex = (systemSlug?: string, planetId?: string): number => {
-  if (!planetId) return 0
+  if (!systemSlug && !planetId) return 0
   const match = chapters.findIndex((c) => {
-    if (systemSlug) return c.systemSlug === systemSlug && c.planetId === planetId
-    return c.planetId === planetId
+    if (systemSlug && planetId) return c.systemSlug === systemSlug && c.planetId === planetId
+    if (systemSlug) return c.systemSlug === systemSlug
+    if (planetId) return c.planetId === planetId
+    return false
   })
   return match >= 0 ? match : 0
 }

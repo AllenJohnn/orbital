@@ -5,8 +5,7 @@
     :inert="progress <= 0.55"
     :style="{
       opacity: progress,
-      visibility: progress < 0.02 ? 'hidden' : 'visible',
-      pointerEvents: progress > 0.55 ? 'auto' : 'none'
+      visibility: progress < 0.02 ? 'hidden' : 'visible'
     }"
   >
     <!-- 1. Header: ORBITAL ATLAS / SYSTEM 00N on left, NEXT: <SYSTEM> → on right -->
@@ -14,7 +13,19 @@
       <div class="header-eyebrow">
         ORBITAL ATLAS <span>／</span> SYSTEM 00{{ system.missionNo }}
       </div>
-      <NuxtLink :to="nextLink" class="header-next-link">
+      <button
+        v-if="isChapterChain"
+        type="button"
+        class="header-next-link"
+        @click="handleNextSystem"
+      >
+        NEXT: {{ nextLabel }} →
+      </button>
+      <NuxtLink
+        v-else
+        :to="nextLink"
+        class="header-next-link"
+      >
         NEXT: {{ nextLabel }} →
       </NuxtLink>
     </header>
@@ -314,6 +325,7 @@ const emit = defineEmits<{
   'return-to-kepler': []
   'return-to-planet': []
   'return-to-start': []
+  'next-system': []
 }>()
 
 const router = useRouter()
@@ -455,6 +467,10 @@ const handleReturnToPlanet = () => {
   emit('return-to-planet')
   emit('return-to-kepler')
 }
+
+const handleNextSystem = () => {
+  emit('next-system')
+}
 </script>
 
 <style scoped>
@@ -471,6 +487,7 @@ const handleReturnToPlanet = () => {
   font-family: Inter, system-ui, sans-serif;
   user-select: none;
   transition: opacity 160ms linear;
+  pointer-events: none;
 }
 
 /* 1. Header */
@@ -498,6 +515,11 @@ const handleReturnToPlanet = () => {
 }
 
 .header-next-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
   color: rgb(239 190 128 / 85%);
   font-size: 0.62rem;
   letter-spacing: 0.2em;

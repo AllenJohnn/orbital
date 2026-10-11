@@ -4,7 +4,10 @@ import { onMounted, onUnmounted, ref } from 'vue'
 
 export const useLenis = () => {
   const lenis = ref<Lenis | null>(null)
-  let updateLenis: ((time: number) => void) | null = null
+
+  const resize = () => {
+    lenis.value?.resize()
+  }
 
   onMounted(() => {
     if (typeof window === 'undefined') return
@@ -14,24 +17,21 @@ export const useLenis = () => {
     const instance = new Lenis({
       lerp: 0.085,
       smoothWheel: true,
+      autoRaf: true,
+      syncTouch: false
     })
     lenis.value = instance
 
-    updateLenis = (time: number) => {
-      instance.raf(time * 1000)
-    }
-
-    gsap.ticker.add(updateLenis)
-    gsap.ticker.lagSmoothing(0)
+    // Ensure dimensions are accurately measured once DOM settles
+    window.requestAnimationFrame(() => {
+      instance.resize()
+    })
   })
 
   onUnmounted(() => {
-    if (updateLenis) gsap.ticker.remove(updateLenis)
-    updateLenis = null
     lenis.value?.destroy()
     lenis.value = null
-    gsap.ticker.lagSmoothing(500, 33)
   })
 
-  return { lenis }
+  return { lenis, resize }
 }
