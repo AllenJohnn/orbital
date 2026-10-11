@@ -19,8 +19,8 @@ export const kepler186: System = {
     {
       id: 'b', name: 'Kepler-186b', radiusEarth: 1.07, massEarth: 1.24,
       periodDays: 3.8867907, distanceAU: 0.0343, equilibriumTempK: 571,
-      worldType: 'ROCKY', inHabitableZone: false, surveyed: false,
-      blurb: 'A compact inner orbit around the system’s red dwarf. Surface conditions remain unknown.',
+      worldType: 'ROCKY', inHabitableZone: false, surveyed: true,
+      blurb: 'A scorched terrestrial world in a tight 3.8-day orbit. Extreme stellar irradiance and basaltic volcanic plains.',
       nasaUrl: 'https://exoplanetarchive.ipac.caltech.edu/overview/Kepler-186%20b',
       diagramRadius: 0.23, diagramAngle: -2.45, markerColor: '#a6b7c8',
       visual: {
@@ -47,8 +47,8 @@ export const kepler186: System = {
     {
       id: 'd', name: 'Kepler-186d', radiusEarth: 1.4, massEarth: 2.54,
       periodDays: 13.342996, distanceAU: 0.0781, equilibriumTempK: 379,
-      worldType: 'SUPER-EARTH', inHabitableZone: false, surveyed: false,
-      blurb: 'One of five known planets in the Kepler-186 system. Surface conditions remain unknown.',
+      worldType: 'SUPER-EARTH', inHabitableZone: false, surveyed: true,
+      blurb: 'A frigid super-Earth encased in dense glacial sheets and volatile-rich atmospheres. Deep ice fields across the twilight terminator.',
       nasaUrl: 'https://exoplanetarchive.ipac.caltech.edu/overview/Kepler-186%20d',
       diagramRadius: 0.51, diagramAngle: 0.2, markerColor: '#cf8969',
       visual: {

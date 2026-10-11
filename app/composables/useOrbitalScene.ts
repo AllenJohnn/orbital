@@ -12,7 +12,8 @@ export const useOrbitalScene = (
   containerRef: Ref<HTMLElement | null>,
   scrollProgress: Ref<number>,
   planetVisualRef?: Ref<PlanetVisual | undefined> | (() => void),
-  onUnavailable?: () => void
+  onUnavailable?: () => void,
+  starColorRef?: Ref<string | undefined>
 ) => {
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
@@ -180,28 +181,55 @@ export const useOrbitalScene = (
     const material = new THREE.ShaderMaterial({
       uniforms: {
         uColor: { value: new THREE.Color(0xffffff) },
-        uPixelRatio: { value: pixelRatio }
+        uPixelRatio: { value: pixelRatio },
+        uWarp: { value: 0 }
       },
       vertexShader: `
         attribute float aOpacity;
         attribute float aSize;
         varying float vOpacity;
+        varying vec2 vScreenDir;
         uniform float uPixelRatio;
+        uniform float uWarp;
         void main() {
           vOpacity = aOpacity;
-          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = aSize * uPixelRatio * (1000.0 / -mvPosition.z);
-          gl_Position = projectionMatrix * mvPosition;
+          vec3 p = position;
+          // Warp: accelerate stars towards the observer along Z
+          p.z += uWarp * 18000.0 * (0.8 + aOpacity * 0.4);
+          if (p.z > 9000.0) {
+            p.z -= 30000.0;
+          }
+          vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
+          float size = aSize * uPixelRatio * (1000.0 / -mvPosition.z);
+          size *= (1.0 + uWarp * 14.0);
+          gl_PointSize = clamp(size, 1.0, 160.0);
+          vec4 proj = projectionMatrix * mvPosition;
+          vScreenDir = normalize(proj.xy / max(0.001, length(proj.xy)));
+          gl_Position = proj;
         }
       `,
       fragmentShader: `
         varying float vOpacity;
+        varying vec2 vScreenDir;
         uniform vec3 uColor;
+        uniform float uWarp;
         void main() {
-          float dist = distance(gl_PointCoord, vec2(0.5));
-          if (dist > 0.5) discard;
-          float alpha = smoothstep(0.5, 0.1, dist) * vOpacity;
-          gl_FragColor = vec4(uColor, alpha);
+          vec2 coord = gl_PointCoord - vec2(0.5);
+          if (uWarp > 0.001) {
+            float radial = dot(coord, vScreenDir);
+            float perp = coord.x * vScreenDir.y - coord.y * vScreenDir.x;
+            radial /= (1.0 + uWarp * 10.0);
+            float dist = length(vec2(radial, perp * 2.2));
+            if (dist > 0.5) discard;
+            float alpha = smoothstep(0.5, 0.05, dist) * vOpacity;
+            vec3 warpColor = mix(uColor, vec3(1.2, 1.35, 1.6), uWarp * 0.75);
+            gl_FragColor = vec4(warpColor, alpha);
+          } else {
+            float dist = distance(gl_PointCoord, vec2(0.5));
+            if (dist > 0.5) discard;
+            float alpha = smoothstep(0.5, 0.1, dist) * vOpacity;
+            gl_FragColor = vec4(uColor, alpha);
+          }
         }
       `,
       transparent: true,
@@ -281,6 +309,13 @@ export const useOrbitalScene = (
     }
   }
 
+  const setStarColor = (colorHex: string) => {
+    if (!sunSprite || !glareSprite) return
+    const col = new THREE.Color(colorHex)
+    sunSprite.material.color.copy(col)
+    glareSprite.material.color.copy(col)
+  }
+
   const onWindowResize = () => {
     if (!camera || !renderer) return
     camera.aspect = window.innerWidth / window.innerHeight
@@ -357,6 +392,12 @@ export const useOrbitalScene = (
     glareSprite.renderOrder = 1000
     scene.add(glareSprite)
 
+    if (starColorRef) {
+      watch(starColorRef, (newColor) => {
+        if (newColor) setStarColor(newColor)
+      }, { immediate: true })
+    }
+
     const visualRef: Ref<PlanetVisual | undefined> | undefined =
       typeof planetVisualRef === 'function' ? undefined : planetVisualRef
     const initialVisual = visualRef?.value ?? kepler186System.planets[4]?.visual
@@ -402,8 +443,6 @@ export const useOrbitalScene = (
       detailedPlanetCompileTimer = window.setTimeout(precompileDetailedPlanet, 120)
     }
 
-    // Render the space scene first, then reveal the planet only after its full
-    // terrain, cloud, and atmosphere shaders have compiled.
     glareSprite.visible = true
     void renderer.compileAsync(scene, camera).then(() => {
       startRenderer()
@@ -443,12 +482,13 @@ export const useOrbitalScene = (
 
     const time = timestamp * 0.001
     const rawProgress = scrollProgress.value
-    // Reduced-motion users move between a few stable scene poses instead of a continuous camera flight.
+
+    // Reduced-motion: snap to stable poses
     const p = reducedMotion
       ? rawProgress < 0.2 ? 0 : rawProgress < 0.53 ? 0.48 : rawProgress < SYSTEM_REVEAL_AT ? 0.62 : 1
       : rawProgress
     const journeyProgress = THREE.MathUtils.clamp(p / SYSTEM_REVEAL_AT, 0, 1)
-    const systemProgress = THREE.MathUtils.clamp((p - SYSTEM_REVEAL_AT) / (1 - SYSTEM_REVEAL_AT), 0, 1)
+    const systemProgress = THREE.MathUtils.clamp((p - SYSTEM_REVEAL_AT) / (TIMELINE.warpOutStart - SYSTEM_REVEAL_AT), 0, 1)
     const systemEase = THREE.MathUtils.smoothstep(systemProgress, 0, 1)
     const easeProgress = journeyProgress < 0.5
       ? 2 * journeyProgress * journeyProgress
@@ -489,9 +529,15 @@ export const useOrbitalScene = (
       camera.lookAt(finalLookAt)
     }
 
-    const nextFov = p <= SYSTEM_REVEAL_AT
+    // Warp Out segment
+    const isWarping = !reducedMotion && p >= TIMELINE.warpOutStart
+    const warpFactor = isWarping ? (p - TIMELINE.warpOutStart) / (1 - TIMELINE.warpOutStart) : 0
+
+    const baseFov = p <= SYSTEM_REVEAL_AT
       ? THREE.MathUtils.lerp(45, 80, easeProgress)
       : THREE.MathUtils.lerp(80, 52, systemEase)
+    const nextFov = isWarping ? baseFov + warpFactor * 26 : baseFov
+
     if (Math.abs(camera.fov - nextFov) > 0.1) {
       camera.fov = nextFov
       camera.updateProjectionMatrix()
@@ -535,10 +581,13 @@ export const useOrbitalScene = (
         starParticles.rotation.y += 0.0001
         starParticles.rotation.x += 0.00005
       }
-      const material = starParticles.material as THREE.ShaderMaterial
+      const starMaterial = starParticles.material as THREE.ShaderMaterial
       const baseBrightness = THREE.MathUtils.lerp(1.0, 0.3, Math.pow(p, 4))
       const brightness = baseBrightness + eclipseFactor * 1.5
-      material.uniforms.uColor?.value.setRGB(brightness, brightness, brightness)
+      starMaterial.uniforms.uColor?.value.setRGB(brightness, brightness, brightness)
+      if (starMaterial.uniforms.uWarp) {
+        starMaterial.uniforms.uWarp.value = warpFactor
+      }
     }
 
     if (planetController) {
@@ -622,6 +671,7 @@ export const useOrbitalScene = (
     init,
     cleanup,
     setVisual: (visual: PlanetVisual) => planetController?.setVisual(visual),
+    setStarColor,
     get scene() { return scene },
     get camera() { return camera },
     get starParticles() { return starParticles },

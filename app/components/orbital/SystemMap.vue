@@ -162,25 +162,53 @@
             {{ selectedWorld.blurb }}
           </p>
 
-          <!-- Primary Button -->
+          <!-- Primary Action Button or Chapter Chain Cue -->
           <div class="caption-action-row">
-            <button
-              v-if="selectedWorld.surveyed"
-              type="button"
-              class="btn-survey-primary"
-              @click="handleBeginSurvey"
-            >
-              Begin survey →
-            </button>
-            <button
-              v-else
-              type="button"
-              disabled
-              class="btn-survey-disabled"
-            >
-              Survey pending
-            </button>
+            <template v-if="isChapterChain">
+              <button
+                v-if="isFinalChapter"
+                type="button"
+                class="btn-return-start"
+                @click="$emit('return-to-start')"
+              >
+                <span>End of survey. Return to start</span>
+                <span class="btn-arrow">↖</span>
+              </button>
+              <div v-else class="scroll-continue-cue">
+                <span class="cue-dot"></span>
+                <span>Scroll to continue</span>
+                <span class="cue-arrow">↓</span>
+              </div>
+            </template>
+            <template v-else>
+              <button
+                v-if="selectedWorld.surveyed"
+                type="button"
+                class="btn-survey-primary"
+                @click="handleBeginSurvey"
+              >
+                Begin survey →
+              </button>
+              <button
+                v-else
+                type="button"
+                disabled
+                class="btn-survey-disabled"
+              >
+                Survey pending
+              </button>
+            </template>
           </div>
+
+          <!-- Return to this planet -->
+          <button
+            v-if="showReturnButton"
+            type="button"
+            class="btn-return-planet"
+            @click="handleReturnToPlanet"
+          >
+            <span>↖</span> RETURN TO THIS PLANET
+          </button>
 
           <!-- More data toggle -->
           <div class="more-data-container">
@@ -270,16 +298,22 @@ const props = withDefaults(
     progress?: number
     initialWorldId?: string
     showReturnButton?: boolean
+    isChapterChain?: boolean
+    isFinalChapter?: boolean
   }>(),
   {
     progress: 1,
     initialWorldId: undefined,
-    showReturnButton: true
+    showReturnButton: true,
+    isChapterChain: false,
+    isFinalChapter: false
   }
 )
 
 const emit = defineEmits<{
   'return-to-kepler': []
+  'return-to-planet': []
+  'return-to-start': []
 }>()
 
 const router = useRouter()
@@ -401,16 +435,25 @@ const getPlanetCoord = (world: Planet) => {
 
 const selectWorld = (id: string) => {
   selectedWorldId.value = id
-  void router.replace({ query: { ...router.currentRoute.value.query, planet: id } })
+  if (!props.isChapterChain) {
+    void router.replace({ query: { ...router.currentRoute.value.query, planet: id } })
+  }
 }
 
 const handleBeginSurvey = () => {
   if (props.system.slug === 'kepler-186') {
     void router.push({ path: '/', query: { planet: selectedWorld.value.id } })
+    emit('return-to-planet')
     emit('return-to-kepler')
   } else {
-    void router.push({ path: `/system/${props.system.slug}`, query: { planet: selectedWorld.value.id } })
+    void router.push({ path: '/', query: { system: props.system.slug, planet: selectedWorld.value.id } })
+    emit('return-to-planet')
   }
+}
+
+const handleReturnToPlanet = () => {
+  emit('return-to-planet')
+  emit('return-to-kepler')
 }
 </script>
 
@@ -697,6 +740,98 @@ const handleBeginSurvey = () => {
   cursor: not-allowed;
 }
 
+/* Scroll To Continue Cue */
+.scroll-continue-cue {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgb(239 190 128 / 85%);
+  padding: 0.5rem 0;
+}
+
+.cue-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: rgb(239 190 128 / 90%);
+  box-shadow: 0 0 8px rgb(239 190 128 / 90%);
+  animation: cuePulse 2s ease-in-out infinite;
+}
+
+.cue-arrow {
+  animation: cueBounce 1.8s ease-in-out infinite;
+}
+
+@keyframes cuePulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes cueBounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(3px); }
+}
+
+/* Final Chapter: Return to Start */
+.btn-return-start {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  padding: 0.65rem 1.4rem;
+  background: rgb(239 190 128 / 18%);
+  border: 1px solid rgb(239 190 128 / 75%);
+  color: rgb(255 244 224 / 96%);
+  font-size: 0.66rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 160ms ease;
+  border-radius: 2px;
+  box-shadow: 0 0 16px rgb(239 190 128 / 20%);
+}
+
+.btn-return-start:hover {
+  background: rgb(239 190 128 / 32%);
+  border-color: rgb(239 190 128 / 100%);
+  color: #fff;
+  box-shadow: 0 0 24px rgb(239 190 128 / 40%);
+}
+
+.btn-return-start:focus-visible {
+  outline: 2px solid rgb(239 190 128 / 90%);
+  outline-offset: 3px;
+}
+
+/* Return to This Planet Button */
+.btn-return-planet {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  color: rgb(239 190 128 / 75%);
+  font-size: 0.58rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0;
+  transition: color 150ms ease;
+  margin-top: 0.15rem;
+}
+
+.btn-return-planet:hover {
+  color: #fff;
+}
+
+.btn-return-planet:focus-visible {
+  outline: 1px solid rgb(239 190 128 / 90%);
+  outline-offset: 3px;
+}
+
 /* More Data Section */
 .more-data-container {
   display: flex;
@@ -946,6 +1081,9 @@ const handleBeginSurvey = () => {
   .more-data-slide-leave-active,
   .picker-letter-btn,
   .btn-survey-primary,
+  .btn-return-start,
+  .cue-dot,
+  .cue-arrow,
   .selected-glow-outer {
     transition: none !important;
     animation: none !important;
