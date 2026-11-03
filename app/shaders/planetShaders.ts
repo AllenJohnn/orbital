@@ -232,9 +232,9 @@ float getElevation(vec3 p, float distToCam) {
       localDetailMask = clamp(localDetailMask, 0.0, 1.0);
       
       if (localDetailMask > 0.01) {
-          float localDetail = fbm(p * 15.0) * 0.025;
+          float localDetail = fbm(p * 15.0) * 0.034;
           if (distToCam < 500.0) {
-              localDetail += ridgedFBM(p * 35.0) * 0.015 * smoothstep(500.0, 100.0, distToCam);
+              localDetail += ridgedFBM(p * 35.0) * 0.022 * (1.0 - smoothstep(100.0, 500.0, distToCam));
           }
           elevation += localDetail * localDetailMask * smoothstep(1500.0, 300.0, distToCam);
       }
@@ -246,13 +246,13 @@ float getElevation(vec3 p, float distToCam) {
       microMask = clamp(microMask, 0.0, 1.0);
       
       // High frequency structural noise for close approach (rocks, fine ridges)
-      float microDetail = snoise(p * 150.0) * 0.002;
+      float microDetail = snoise(p * 150.0) * 0.0028;
       
       // Ultra-high frequency for extreme close-up (prevents "blobby" look)
       if (distToCam < 30.0) {
           float ultraFade = smoothstep(30.0, 2.0, distToCam);
-          microDetail += snoise(p * 450.0) * 0.0008 * ultraFade;
-          microDetail += snoise(p * 900.0) * 0.0003 * ultraFade;
+          microDetail += snoise(p * 450.0) * 0.001 * ultraFade;
+          microDetail += snoise(p * 900.0) * 0.00035 * ultraFade;
       }
       
       elevation += microDetail * microMask * smoothstep(150.0, 10.0, distToCam);
@@ -266,13 +266,13 @@ float getSurfaceElevationFromTerrain(vec3 p, float e, float distToCam) {
   float seaLevel = uOceanLevel;
   if (uOceanLevel > 0.001 && e < seaLevel) {
     // Water surface: low-frequency swell + high-frequency micro ripples
-    float swell = snoise(p * 25.0 + uTime * 0.01) * 0.0015;
+    float swell = snoise(p * 12.0 + vec3(0.0, uTime * 0.008, 0.0)) * 0.0018;
     float ripples = 0.0;
-    if (distToCam < 100.0) {
-       ripples = snoise(p * 250.0 + uTime * 0.03) * 0.0004 * smoothstep(100.0, 10.0, distToCam);
-       if (distToCam < 20.0) {
-           ripples += snoise(p * 600.0 + uTime * 0.05) * 0.00015 * smoothstep(20.0, 2.0, distToCam);
-       }
+    if (distToCam < 700.0) {
+       float nearFade = 1.0 - smoothstep(80.0, 700.0, distToCam);
+       float waveA = sin(dot(p, normalize(vec3(1.0, 0.0, 0.42))) * 155.0 + uTime * 0.08);
+       float waveB = sin(dot(p, normalize(vec3(-0.36, 0.82, 1.0))) * 218.0 - uTime * 0.055);
+       ripples = (waveA + waveB) * 0.00011 * nearFade;
     }
     return seaLevel + swell + ripples;
   }
@@ -290,6 +290,10 @@ void main() {
   // Evaluate the expensive terrain field once for biome and water shading.
   float terrainElevation = getElevation(localNormal, distToCam);
   float surfaceElevation = getSurfaceElevationFromTerrain(localNormal, terrainElevation, distToCam);
+  float shorelineGrain = snoise(localNormal * 34.0 + vec3(4.7));
+  float texturedElevation = terrainElevation + shorelineGrain * 0.008;
+  float surfaceGrain = snoise(localNormal * 46.0 + vec3(12.3));
+  float strataGrain = snoise(localNormal * 17.0 + vec3(2.8));
   
   // --------------------------------------------------------
   // GEOLOGICAL BUMP MAPPING (Normal Perturbation)
@@ -344,12 +348,12 @@ void main() {
   float specular = 0.0;
   float diffuse = max(dot(finalNormal, sunDir), 0.0);
   
-  if (uOceanLevel > 0.001 && terrainElevation < seaLevel) {
+  if (uOceanLevel > 0.001 && texturedElevation < seaLevel) {
     // --------------------------------------------------------
     // EARTH: Deep Oceans & Shallow Coastlines
     // --------------------------------------------------------
-    float depth = smoothstep(seaLevel - 0.15, seaLevel, terrainElevation);
-    float shoreLine = smoothstep(seaLevel - 0.02, seaLevel, terrainElevation); // 0 in deep, 1 at shore
+    float depth = smoothstep(seaLevel - 0.18, seaLevel, texturedElevation);
+    float shoreLine = smoothstep(seaLevel - 0.035, seaLevel + 0.006, texturedElevation); // 0 in deep, 1 at shore
     
     // Darker, more cinematic alien ocean colors
     vec3 waterDeep = vec3(0.002, 0.015, 0.04);
@@ -357,8 +361,8 @@ void main() {
     vec3 waterCoastal = vec3(0.08, 0.22, 0.28); // Sediment/turquoise transition
     
     // Massive atmospheric/chemical bands in the deep ocean
-    float band = snoise(vec3(localNormal.y * 5.0, localNormal.x * 2.5, 0.0)) * 0.04;
-    waterDeep += band;
+    float currentBands = sin((localNormal.x * 1.1 + localNormal.z * 0.7 + shorelineGrain * 0.12) * 34.0 + uTime * 0.012);
+    waterDeep += vec3(0.001, 0.009, 0.018) * (currentBands * 0.45 + surfaceGrain * 0.22);
     
     vec3 waterBase = mix(waterDeep, waterShallow, depth);
     albedo = mix(waterBase, waterCoastal, shoreLine);
@@ -373,14 +377,16 @@ void main() {
     vec3 halfVector = normalize(sunDir + viewDir);
     float specAngle = max(dot(finalNormal, halfVector), 0.0);
     // Dynamic roughness based on depth (coastlines are rougher/frothy, deep ocean is smoother)
-    float specPower = mix(150.0, 50.0, depth);
-    specular = pow(specAngle, specPower) * mix(1.8, 0.8, depth);
+    float specPower = mix(170.0, 52.0, depth);
+    float waveRoughness = 0.88 + surfaceGrain * 0.12;
+    float sunGlint = pow(specAngle, 170.0) * 0.45;
+    specular = pow(specAngle, specPower) * mix(1.45, 0.68, depth) * waveRoughness + sunGlint;
   } else {
     // --------------------------------------------------------
     // LAND GEOLOGY
     // --------------------------------------------------------
     isLand = 1.0;
-    float h = smoothstep(seaLevel, 1.0, terrainElevation);
+    float h = smoothstep(seaLevel, 1.0, texturedElevation);
     
     // Biome 1: Mars (Iron / Rust / Basalt)
     vec3 marsLow = uPalette3;
@@ -411,15 +417,23 @@ void main() {
     
     // Coastal sand/sediment
     vec3 coastLine = mix(vec3(0.25, 0.22, 0.18), vec3(0.1, 0.05, 0.02), mineralMask);
-    float isCoast = uOceanLevel > 0.001 ? smoothstep(seaLevel + 0.04, seaLevel, terrainElevation) : 0.0;
+    float isCoast = uOceanLevel > 0.001 ? 1.0 - smoothstep(seaLevel - 0.018, seaLevel + 0.048, texturedElevation) : 0.0;
     albedo = mix(albedo, coastLine, isCoast);
     landSpec = mix(landSpec, 0.1, isCoast); // Wet sand is slightly specular
     
     // Polar Ice
     vec3 ice = vec3(0.82, 0.88, 0.95);
-    float isIce = coldMask * (uOceanLevel > 0.001 ? smoothstep(seaLevel + 0.02, seaLevel + 0.2, terrainElevation) : 1.0);
+    float polarIce = coldMask * (uOceanLevel > 0.001 ? smoothstep(seaLevel + 0.02, seaLevel + 0.2, texturedElevation) : 1.0);
+    float highlandSnow = smoothstep(0.78, 0.96, texturedElevation) * (1.0 - mineralMask * 0.6);
+    float isIce = max(polarIce, highlandSnow * 0.72);
     albedo = mix(albedo, ice, isIce);
     landSpec = mix(landSpec, 0.8, isIce); // Ice is highly reflective
+
+    // Fine mineral grain and exposed strata give plains and uplands distinct texture.
+    float mineralVein = smoothstep(0.64, 0.82, 1.0 - abs(strataGrain + surfaceGrain * 0.24));
+    float landTexture = 1.0 + surfaceGrain * 0.085 + strataGrain * 0.035;
+    albedo *= landTexture;
+    albedo = mix(albedo, mix(uPalette2, uPalette3, mineralMask), mineralVein * 0.12 * (1.0 - isIce));
     
     // Calculate land specular
     vec3 halfVector = normalize(sunDir + viewDir);
@@ -594,28 +608,27 @@ void main() {
   vec3 localNormal = normalize(vNormalLocal);
   vec3 sunDir = normalize(uSunDirection);
 
-  // Evolve clouds very slowly over time
-  // Domain warping for swirling hurricane-like shapes and directional flow
-  vec3 baseWarp = vec3(fbm(localNormal * 2.0 + uTime * 0.003), fbm(localNormal * 2.0 - uTime * 0.002), 0.0);
-  vec3 noisePos = localNormal * 3.5 + baseWarp * 0.5 + uTime * 0.002;
-  
-  // Layered noise for cloud formations
-  float largeClouds = fbm(noisePos);
-  float mediumClouds = fbm(noisePos * 5.0 + vec3(1.2, -0.5, 2.1));
-  float wispyClouds = fbm(noisePos * 15.0);
-  float microClouds = snoise(noisePos * 30.0);
-  
-  // Combine layers (multi-scale hierarchy for clouds)
-  float density = largeClouds * 0.55 + mediumClouds * 0.3 + wispyClouds * 0.1 - microClouds * 0.05;
-  
-  // Soft thresholds for natural edge transparency
-  float coverageEdge = 1.0 - uCloudCover;
-  float coverage = smoothstep(coverageEdge, coverageEdge + 0.30, density);
-  float thickClouds = smoothstep(coverageEdge + 0.20, coverageEdge + 0.50, density);
+  // A single cloud shell carries broad weather systems, broken edges, and fine wisps.
+  vec3 drift = vec3(uTime * 0.002, -uTime * 0.0013, uTime * 0.0016);
+  vec3 baseWarp = vec3(
+    fbm(localNormal * 2.1 + drift),
+    fbm(localNormal * 2.1 - drift + vec3(4.2)),
+    fbm(localNormal * 2.1 + vec3(8.1, 2.3, -3.7))
+  );
+  vec3 noisePos = localNormal * 3.8 + baseWarp * 0.72 + drift;
+  float broadBanks = fbm(noisePos);
+  float billowDetail = fbm(noisePos * 3.2 + vec3(1.2, -0.5, 2.1));
+  float wisps = snoise(noisePos * 13.0 + vec3(5.3));
+  float erosion = snoise(noisePos * 29.0 - drift * 2.0);
+  float density = broadBanks * 0.64 + billowDetail * 0.27 + wisps * 0.075 + erosion * 0.035;
+
+  float coverageEdge = mix(0.64, 0.08, clamp(uCloudCover, 0.0, 1.0));
+  float coverage = smoothstep(coverageEdge - 0.11, coverageEdge + 0.13, density);
+  float thickClouds = smoothstep(coverageEdge + 0.08, coverageEdge + 0.34, density);
   
   // Altitude fade: hide shell boundaries by fading density at the top and bottom of the volume
   float altitude = length(vPositionWorld) - 400.0; // Cloud layer is roughly 406 to 414
-  // Normalize altitude (approx 0 to 1 across the shell volume)
+  // Fade gently across the thin cloud shell to avoid visible sphere edges.
   float normAlt = clamp((altitude - 6.0) / 8.0, 0.0, 1.0);
   // Parabola: 0 at edges, 1 in the middle of the volume
   float altitudeFade = smoothstep(0.0, 0.3, normAlt) * smoothstep(1.0, 0.7, normAlt);
@@ -627,24 +640,25 @@ void main() {
   float terminator = smoothstep(-0.2, 0.2, dot(normal, sunDir));
   
   // Color formulation
-  vec3 cloudLit = vec3(0.95, 0.98, 1.0);
-  // Give clouds on the terminator a sunset/orange scatter tint
-  vec3 cloudSunset = vec3(1.0, 0.65, 0.5);
-  vec3 cloudDark = vec3(0.08, 0.12, 0.2); // Night side ambient
-  
-  vec3 baseColor = mix(cloudSunset, cloudLit, smoothstep(0.0, 0.35, terminator));
-  vec3 cloudColor = baseColor * diffuse * 1.1;
-  cloudColor += cloudDark * (1.0 - terminator) * 0.25; 
-  
-  // Self-shadowing: thicker clouds are slightly darker at their core when lit directly
-  cloudColor -= thickClouds * diffuse * 0.25;
+  vec3 cloudLit = vec3(0.9, 0.94, 0.97);
+  vec3 cloudSunset = vec3(1.0, 0.58, 0.36);
+  vec3 cloudDark = vec3(0.035, 0.055, 0.09);
+  vec3 baseColor = mix(cloudSunset, cloudLit, smoothstep(-0.08, 0.46, dot(normal, sunDir)));
+  vec3 cloudColor = baseColor * (0.22 + diffuse * 1.06);
+  cloudColor = mix(cloudColor, cloudDark, (1.0 - terminator) * 0.72);
+  cloudColor *= 1.0 - thickClouds * 0.2;
+
+  // Thin cloud edges catch the star and separate layered forms from the surface.
+  vec3 viewDir = normalize(cameraPosition - vPositionWorld);
+  vec3 halfVector = normalize(viewDir + sunDir);
+  float silverEdge = pow(max(dot(normal, halfVector), 0.0), 18.0) * (1.0 - thickClouds);
+  cloudColor += vec3(1.0, 0.78, 0.54) * silverEdge * diffuse * 0.32;
   
   // Camera proximity fade to smoothly penetrate volumetric shells
   float distToCam = length(cameraPosition - vPositionWorld);
   float proximityFade = smoothstep(2.0, 15.0, distToCam);
   
-  // Divide base coverage opacity since we use 5 overlapping volumetric shells
-  float finalAlpha = coverage * 0.4 * proximityFade;
+  float finalAlpha = coverage * 0.72 * proximityFade;
   
   gl_FragColor = vec4(cloudColor, finalAlpha);
 }

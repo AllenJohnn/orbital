@@ -206,14 +206,11 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
         side: THREE.DoubleSide
       })
 
-      const cloudLayers = 3
-      for (let i = 0; i < cloudLayers; i++) {
-        const layerRadius = radius * (1.02 + i * 0.005)
-        const cGeo = new THREE.SphereGeometry(layerRadius, widthSegments, heightSegments)
-        cloudGeometries.push(cGeo)
-        const cMesh = new THREE.Mesh(cGeo, cloudMaterial)
-        cloudGroup.add(cMesh)
-      }
+      // One detailed shell avoids stacking the same cloud map three times,
+      // which softened the formations and increased transparent overdraw.
+      const cloudGeometry = new THREE.SphereGeometry(radius * 1.02, widthSegments, heightSegments)
+      cloudGeometries.push(cloudGeometry)
+      cloudGroup.add(new THREE.Mesh(cloudGeometry, cloudMaterial))
 
       planetRotationGroup.add(cloudGroup)
     }
