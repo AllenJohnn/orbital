@@ -1,5 +1,4 @@
 import Lenis from 'lenis'
-import gsap from 'gsap'
 import { onMounted, onUnmounted, ref } from 'vue'
 
 export const useLenis = () => {

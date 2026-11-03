@@ -10,40 +10,27 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, toRef, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, toRef } from 'vue'
 import { useOrbitalScene } from '~/composables/useOrbitalScene'
-import type { PlanetVisual, System } from '~/types/atlas'
 
 const props = defineProps<{
   scrollProgress: number
-  planetVisual?: PlanetVisual
-  starColor?: string
-  system?: System
 }>()
 
 const sceneContainer = ref<HTMLElement | null>(null)
 const webglUnavailable = ref(false)
 const progressRef = toRef(props, 'scrollProgress')
-const visualRef = toRef(props, 'planetVisual')
-const starColorRef = toRef(props, 'starColor')
-const systemRef = toRef(props, 'system')
 
 const orbital = useOrbitalScene(
   sceneContainer,
   progressRef,
-  visualRef,
   () => {
     webglUnavailable.value = true
-  },
-  starColorRef,
-  systemRef
+  }
 )
 
 onMounted(() => {
   orbital.init()
-  if (props.starColor && orbital.setStarColor) {
-    orbital.setStarColor(props.starColor)
-  }
 })
 
 onBeforeUnmount(() => {

@@ -3,12 +3,26 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    color-scheme: dark;
+    --orbital-void: oklch(10% 0.012 245);
+    --orbital-ivory: oklch(94% 0.012 83);
+    --orbital-amber: oklch(76% 0.105 67);
+    --font-body: 'Source Sans 3', system-ui, sans-serif;
+    --font-display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  }
+
   body {
-    background-color: #000;
-    color: #fff;
+    background-color: var(--orbital-void);
+    color: var(--orbital-ivory);
+    font-family: var(--font-body);
     margin: 0;
     padding: 0;
     overflow-x: hidden;
+  }
+
+  button {
+    font: inherit;
   }
 }
 

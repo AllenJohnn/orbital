@@ -1,6 +1,5 @@
 import * as THREE from 'three'
-import { watch, type Ref } from 'vue'
-import type { PlanetVisual, System } from '~/types/atlas'
+import type { Ref } from 'vue'
 import { usePlanet } from './usePlanet'
 import { getSystem } from '~/data/systems'
 import { TIMELINE } from '~/config/timeline'
@@ -11,10 +10,7 @@ const SYSTEM_REVEAL_AT = TIMELINE.systemReveal
 export const useOrbitalScene = (
   containerRef: Ref<HTMLElement | null>,
   scrollProgress: Ref<number>,
-  planetVisualRef?: Ref<PlanetVisual | undefined> | (() => void),
   onUnavailable?: () => void,
-  starColorRef?: Ref<string | undefined>,
-  systemRef?: Ref<System | undefined>
 ) => {
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
@@ -38,9 +34,8 @@ export const useOrbitalScene = (
   let previousFrameTime = 0
   let lastFrameDelta = 0
   let lastProfileTime = 0
-  let detailedPlanetCompileStarted = false
+  let visualCompileRevision = 0
   let reducedMotion = false
-  let detailedPlanetCompileTimer: number | undefined
 
   const sunDir = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
   const rotationAxis = new THREE.Vector3()
@@ -242,7 +237,7 @@ export const useOrbitalScene = (
     scene.add(starParticles)
   }
 
-  const createSystemOverview = (targetSystem?: System) => {
+  const createSystemOverview = () => {
     if (systemMapGroup) {
       scene.remove(systemMapGroup)
       systemMapGroup.traverse((object) => {
@@ -252,7 +247,7 @@ export const useOrbitalScene = (
       systemMapMaterials = []
     }
 
-    const currentSys = targetSystem ?? systemRef?.value ?? kepler186System
+    const currentSys = kepler186System
     systemMapGroup = new THREE.Group()
 
     for (const world of currentSys.planets) {
@@ -364,8 +359,7 @@ export const useOrbitalScene = (
     } catch (error) {
       console.warn('ORBITAL WebGL is unavailable; showing the static scene poster.', error)
       initialized = false
-      const unavailableCallback = typeof planetVisualRef === 'function' ? planetVisualRef : onUnavailable
-      unavailableCallback?.()
+      onUnavailable?.()
       return
     }
     pixelRatio = maxPixelRatio()
@@ -404,54 +398,31 @@ export const useOrbitalScene = (
     glareSprite.renderOrder = 1000
     scene.add(glareSprite)
 
-    if (starColorRef) {
-      watch(starColorRef, (newColor) => {
-        if (newColor) setStarColor(newColor)
-      }, { immediate: true })
-    }
-
-    if (systemRef) {
-      watch(systemRef, (newSys) => {
-        if (newSys && initialized) {
-          createSystemOverview(newSys)
-          if (newSys.starColor) setStarColor(newSys.starColor)
-        }
-      })
-    }
-
-    const visualRef: Ref<PlanetVisual | undefined> | undefined =
-      typeof planetVisualRef === 'function' ? undefined : planetVisualRef
-    const initialVisual = visualRef?.value ?? kepler186System.planets[4]?.visual
+    const initialVisual = kepler186System.planets[0]?.visual
     planetController = usePlanet(scene, initialVisual)
 
-    if (visualRef) {
-      watch(visualRef, (nextVisual) => {
-        if (!initialized || !planetController) return
-        const targetVisual = nextVisual ?? kepler186System.planets[4]?.visual
-        if (targetVisual) {
-          planetController.setVisual(targetVisual)
-          if (detailedPlanetCompileStarted) {
-            planetController.setDetailsVisible(true)
-          }
-        }
+    const precompileCurrentPlanet = (keepHiddenOnFailure = false) => {
+      if (!initialized || !renderer || !camera || !planetController) return
+      const revision = ++visualCompileRevision
+
+      void planetController.precompileTerrain(renderer, camera).then(() => {
+        if (!initialized || !planetController || revision !== visualCompileRevision) return
+        planetController.setDetailsVisible(true)
+        return planetController.precompileEffects(renderer, camera)
+      }).then(() => {
+        if (!initialized || !planetController || revision !== visualCompileRevision) return
+        planetController.setEffectsVisible(true)
+      }).catch((error: unknown) => {
+        console.warn('ORBITAL detailed planet shader precompile failed.', error)
+        if (!initialized || !planetController || revision !== visualCompileRevision) return
+        planetController.setDetailsVisible(!keepHiddenOnFailure)
+        planetController.setEffectsVisible(false)
       })
     }
+
+    setStarColor(kepler186System.starColor)
     window.addEventListener('resize', onWindowResize, { passive: true })
     document.addEventListener('visibilitychange', onVisibilityChange)
-
-    const precompileDetailedPlanet = () => {
-      if (!initialized || detailedPlanetCompileStarted || !renderer || !camera || !planetController) return
-      detailedPlanetCompileStarted = true
-
-      void planetController.precompileDetails(renderer, camera).then(() => {
-        if (!initialized || !planetController) return
-        planetController.setDetailsVisible(true)
-      }).catch((error: unknown) => {
-        console.warn('ORBITAL detailed planet shader precompile failed; showing the detailed scene anyway.', error)
-        if (!initialized || !planetController) return
-        planetController.setDetailsVisible(true)
-      })
-    }
 
     const startRenderer = () => {
       if (!initialized) return
@@ -461,16 +432,13 @@ export const useOrbitalScene = (
         running = true
         animationFrameId = requestAnimationFrame(animate)
       }
-      detailedPlanetCompileTimer = window.setTimeout(precompileDetailedPlanet, 120)
+      precompileCurrentPlanet(true)
     }
 
-    glareSprite.visible = true
-    void renderer.compileAsync(scene, camera).then(() => {
-      startRenderer()
-    }).catch((error: unknown) => {
-      console.warn('ORBITAL preview shader precompile failed; continuing with normal rendering.', error)
-      startRenderer()
-    })
+    // Draw the star field immediately. Waiting for shader compilation here
+    // leaves the entire experience black on browsers with slow GPU compilers.
+    // The detailed planet is revealed only after its shaders are ready.
+    startRenderer()
   }
 
   const animate = (timestamp: number) => {
@@ -649,9 +617,7 @@ export const useOrbitalScene = (
     previousFrameTime = 0
     lastFrameDelta = 0
     lastProfileTime = 0
-    detailedPlanetCompileStarted = false
-    if (detailedPlanetCompileTimer !== undefined) window.clearTimeout(detailedPlanetCompileTimer)
-    detailedPlanetCompileTimer = undefined
+    visualCompileRevision++
     window.removeEventListener('resize', onWindowResize)
     document.removeEventListener('visibilitychange', onVisibilityChange)
 
@@ -691,8 +657,6 @@ export const useOrbitalScene = (
   return {
     init,
     cleanup,
-    setVisual: (visual: PlanetVisual) => planetController?.setVisual(visual),
-    setStarColor,
     get scene() { return scene },
     get camera() { return camera },
     get starParticles() { return starParticles },

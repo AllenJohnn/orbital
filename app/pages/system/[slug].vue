@@ -1,15 +1,12 @@
 <template>
   <div class="h-screen w-full bg-black text-white relative overflow-hidden font-sans">
     <!-- Found System View -->
-    <SystemMap
+    <SurveyComplete
       v-if="system"
-      :system="system"
+      :planet="system.planets[0]!"
       :progress="1"
-      :initial-world-id="initialWorldId"
-      :show-return-button="true"
-      @return-to-kepler="returnToOrigin"
       @return-to-planet="returnToOrigin"
-      @next-system="handleNextSystem"
+      @return-to-start="returnToOrigin"
     />
 
     <!-- Themed 404: Signal Not Found -->
@@ -18,7 +15,7 @@
       class="h-full w-full flex flex-col justify-between p-6 md:p-12 bg-[radial-gradient(ellipse_at_center,rgba(25,18,18,0.6)_0%,rgba(3,5,8,0.98)_80%)]"
     >
       <header class="flex items-center justify-between text-xs tracking-[0.25em] text-white/40 uppercase">
-        <div>ORBITAL ATLAS <span class="text-white/20">／</span> TELEMETRY ERROR</div>
+        <div>ORBITAL <span class="text-white/20">／</span> FIELD RECORD</div>
         <div class="text-rose-400/80 flex items-center gap-2">
           <span class="inline-block w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
           FREQUENCY LOST
@@ -51,7 +48,7 @@
 
       <footer class="flex items-center justify-between text-[0.65rem] tracking-[0.2em] text-white/30 uppercase border-t border-white/10 pt-4">
         <div>ORBITAL DEEP SPACE NETWORK</div>
-        <div>002 SYSTEMS REGISTERED</div>
+        <div>001 SYSTEM REGISTERED</div>
       </footer>
     </div>
   </div>
@@ -60,7 +57,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import SystemMap from '~/components/orbital/SystemMap.vue'
+import SurveyComplete from '~/components/orbital/SurveyComplete.vue'
 import { getSystem } from '~/data/systems'
 
 const route = useRoute()
@@ -73,30 +70,8 @@ const routeSlug = computed(() => {
 
 const system = computed(() => getSystem(routeSlug.value))
 
-const initialWorldId = computed(() => {
-  const queryPlanet = route.query.planet
-  if (typeof queryPlanet === 'string' && queryPlanet.trim()) {
-    return queryPlanet.trim().toLowerCase()
-  }
-  return undefined
-})
-
 const returnToOrigin = () => {
-  const isTrappist = system.value?.slug === 'trappist-1'
-  const pl = initialWorldId.value ?? (isTrappist ? 'e' : 'f')
-  if (isTrappist) {
-    void router.push({ path: '/', query: { system: 'trappist-1', planet: pl } })
-  } else {
-    void router.push({ path: '/', query: { planet: pl } })
-  }
-}
-
-const handleNextSystem = () => {
-  if (system.value?.slug === 'kepler-186') {
-    void router.push('/system/trappist-1')
-  } else {
-    void router.push('/system/kepler-186')
-  }
+  void router.push({ path: '/', query: { planet: 'f' } })
 }
 
 useSeoMeta({

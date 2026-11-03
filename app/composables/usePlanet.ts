@@ -57,6 +57,14 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
   let moonMesh: THREE.Mesh | null = null
 
   let currentVisual: PlanetVisual = initialVisual ?? defaultKepler186fVisual
+  let effectsVisible = false
+
+  const setEffectsVisible = (visible: boolean) => {
+    effectsVisible = visible
+    if (atmosphereMesh) atmosphereMesh.visible = visible
+    if (cloudGroup) cloudGroup.visible = visible
+    if (moonPivot) moonPivot.visible = visible
+  }
 
   const disposePlanetResources = () => {
     // 1. Surface
@@ -177,12 +185,14 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
         depthWrite: false
       })
       atmosphereMesh = new THREE.Mesh(atmosphereGeometry, atmosphereMaterial)
+      atmosphereMesh.visible = effectsVisible
       detailGroup.add(atmosphereMesh)
     }
 
     // 3. Clouds
     if (visual.cloudCover > 0.001) {
       cloudGroup = new THREE.Group()
+      cloudGroup.visible = effectsVisible
       cloudMaterial = new THREE.ShaderMaterial({
         vertexShader: cloudsVertexShader,
         fragmentShader: cloudsFragmentShader,
@@ -227,6 +237,7 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
       moonPivot = new THREE.Group()
       moonPivot.add(moonMesh)
       moonPivot.rotation.z = Math.PI / 12
+      moonPivot.visible = effectsVisible
       detailGroup.add(moonPivot)
     }
   }
@@ -270,22 +281,30 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
     }
   }
 
-  const precompileDetails = (renderer: THREE.WebGLRenderer, camera: THREE.Camera) => {
+  const precompileTerrain = async (renderer: THREE.WebGLRenderer, camera: THREE.Camera) => {
+    const wasVisible = detailGroup.visible
     detailGroup.visible = true
+    setEffectsVisible(false)
     try {
-      return renderer.compileAsync(scene, camera)
+      await renderer.compileAsync(scene, camera)
     } finally {
-      detailGroup.visible = false
+      detailGroup.visible = wasVisible
     }
   }
 
-  const setDetailsVisible = (visible: boolean) => {
-    detailGroup.visible = visible
+  const precompileEffects = async (renderer: THREE.WebGLRenderer, camera: THREE.Camera) => {
+    const wasVisible = detailGroup.visible
+    detailGroup.visible = true
+    setEffectsVisible(true)
+    try {
+      await renderer.compileAsync(scene, camera)
+    } finally {
+      detailGroup.visible = wasVisible
+      setEffectsVisible(false)
+    }
   }
 
-  const setVisual = (nextVisual: PlanetVisual) => {
-    buildPlanet(nextVisual)
-  }
+  const setDetailsVisible = (visible: boolean) => { detailGroup.visible = visible }
 
   const cleanup = () => {
     disposePlanetResources()
@@ -295,9 +314,10 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
   return {
     planetGroup,
     update,
-    precompileDetails,
+    precompileTerrain,
+    precompileEffects,
     setDetailsVisible,
-    setVisual,
+    setEffectsVisible,
     cleanup,
     get surfaceRotation() {
       return surfaceMesh ? surfaceMesh.rotation.y : 0
