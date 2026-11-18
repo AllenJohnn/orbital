@@ -158,17 +158,17 @@ export const useOrbitalScene = (
 
     for (let i = 0; i < starCount; i++) {
       const distLayer = Math.pow(Math.random(), 3.0)
-      const radius = 1000 + distLayer * 15000
+      // Keep the point field well behind the camera at every orbit distance.
+      // Near-camera points used to balloon into bright clumps when projected.
+      const radius = 18000 + distLayer * 7000
       const theta = Math.random() * Math.PI * 2
       const phi = Math.acos(2 * Math.random() - 1)
-      let y = radius * Math.sin(phi) * Math.sin(theta)
-      if (Math.random() > 0.3) y *= 0.2
-
+      const y = radius * Math.sin(phi) * Math.sin(theta)
       positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta)
       positions[i * 3 + 1] = y
-      positions[i * 3 + 2] = (Math.random() - 0.5) * 20000
+      positions[i * 3 + 2] = radius * Math.cos(phi)
       opacities[i] = (Math.random() * 0.7 + 0.1) * (1.0 - distLayer * 0.7)
-      sizes[i] = Math.pow(Math.random(), 4.0) * 2.5 + 0.3
+      sizes[i] = 0.72 + Math.random() * 0.38
       const tint = Math.random()
       const starColor = tint < 0.18
         ? [1.0, 0.72, 0.5]
@@ -208,9 +208,9 @@ export const useOrbitalScene = (
             p.z -= 30000.0;
           }
           vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
-          float size = aSize * uPixelRatio * (1000.0 / -mvPosition.z);
-          size *= (1.0 + uWarp * 14.0);
-          gl_PointSize = clamp(size, 1.0, 160.0);
+          float size = aSize * uPixelRatio * (12000.0 / -mvPosition.z);
+          size *= (1.0 + uWarp * 4.0);
+          gl_PointSize = clamp(size, 1.0, 2.2);
           vec4 proj = projectionMatrix * mvPosition;
           vScreenDir = normalize(proj.xy / max(0.001, length(proj.xy)));
           gl_Position = proj;
