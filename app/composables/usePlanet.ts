@@ -238,7 +238,7 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
     }
 
     // 3. Clouds
-    if (visual.cloudCover > 0.001) {
+    if (PLANET_SURFACE_CONFIG.cloudCover > 0.001) {
       cloudGroup = new THREE.Group()
       cloudGroup.visible = effectsVisible
       cloudMaterial = new THREE.ShaderMaterial({
