@@ -3,6 +3,7 @@ import type { PlanetVisual } from '~/types/atlas'
 import type { RenderQualityTier } from '~/config/celestialRender'
 import { CELESTIAL_RENDER_CONFIG } from '~/config/celestialRender'
 import { PLANET_SURFACE_CONFIG } from '~/config/planetSurface'
+import { SURFACE_APPROACH_CONFIG } from '~/config/surfaceApproach'
 import {
   planetVertexShader,
   planetFragmentShader,
@@ -69,6 +70,30 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
   const moonWorldPosition = new THREE.Vector3()
   const planetWorldPosition = new THREE.Vector3()
 
+  let approachPivot: THREE.Group | null = null
+  let approachPatch: THREE.Mesh | null = null
+  let approachMaterial: THREE.ShaderMaterial | null = null
+  let approachRocks: THREE.InstancedMesh | null = null
+  let approachDust: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial> | null = null
+  const approachGeometries: Record<RenderQualityTier, THREE.BufferGeometry> = {
+    low: new THREE.BufferGeometry(),
+    medium: new THREE.BufferGeometry(),
+    high: new THREE.BufferGeometry()
+  }
+  let approachQuality: RenderQualityTier = 'medium'
+  const approachRotation = new THREE.Matrix3()
+  const approachRotationMatrix = new THREE.Matrix4()
+  const approachCenter = new THREE.Vector3()
+  const localSurfacePoint = new THREE.Vector3()
+  const inversePlanetMatrix = new THREE.Matrix4()
+  const patchAxis = new THREE.Vector3(0, 0, 1)
+  const rockUp = new THREE.Vector3(0, 1, 0)
+  const rockPosition = new THREE.Vector3()
+  const rockScale = new THREE.Vector3()
+  const rockQuaternion = new THREE.Quaternion()
+  const rockMatrix = new THREE.Matrix4()
+  const rockColor = new THREE.Color()
+
   let currentVisual: PlanetVisual = initialVisual ?? defaultKepler186fVisual
   let effectsVisible = false
 
@@ -79,7 +104,271 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
     if (moonPivot) moonPivot.visible = visible
   }
 
+  const buildApproachGeometry = (tier: RenderQualityTier) => {
+    const geometry = approachGeometries[tier]
+    const { radial, angular } = SURFACE_APPROACH_CONFIG.patchSegments[tier]
+    const vertexCount = (radial + 1) * (angular + 1)
+    const positions = new Float32Array(vertexCount * 3)
+    const normals = new Float32Array(vertexCount * 3)
+    const indices: number[] = []
+    let offset = 0
+
+    for (let ring = 0; ring <= radial; ring++) {
+      const angle = SURFACE_APPROACH_CONFIG.patchAngularRadius * ring / radial
+      const sinAngle = Math.sin(angle)
+      const cosAngle = Math.cos(angle)
+      for (let segment = 0; segment <= angular; segment++) {
+        const around = segment / angular * Math.PI * 2
+        const x = sinAngle * Math.cos(around)
+        const y = sinAngle * Math.sin(around)
+        const z = cosAngle
+        positions.set([x * (radius + SURFACE_APPROACH_CONFIG.patchLift), y * (radius + SURFACE_APPROACH_CONFIG.patchLift), z * (radius + SURFACE_APPROACH_CONFIG.patchLift)], offset)
+        normals.set([x, y, z], offset)
+        offset += 3
+      }
+    }
+
+    for (let ring = 0; ring < radial; ring++) {
+      for (let segment = 0; segment < angular; segment++) {
+        const a = ring * (angular + 1) + segment
+        const b = a + angular + 1
+        indices.push(a, b, a + 1, b, b + 1, a + 1)
+      }
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+    geometry.setIndex(indices)
+    geometry.computeBoundingSphere()
+  }
+
+  const setApproachQuality = (tier: RenderQualityTier) => {
+    approachQuality = tier
+    if (approachPatch) approachPatch.geometry = approachGeometries[tier]
+    if (approachMaterial) {
+      approachMaterial.defines = { ...surfaceQualityDefines(tier), APPROACH_PATCH: 1 }
+      approachMaterial.needsUpdate = true
+    }
+    if (approachRocks) approachRocks.count = SURFACE_APPROACH_CONFIG.scatterCount[tier]
+  }
+
+  const updateApproach = (surfacePointWorld: THREE.Vector3, altitude: number, opacity: number, time: number, currentPixelRatio: number) => {
+    if (!approachPivot || !surfaceMesh || !approachMaterial || !approachDust) return
+    surfaceMesh.updateWorldMatrix(true, false)
+    inversePlanetMatrix.copy(surfaceMesh.matrixWorld).invert()
+    localSurfacePoint.copy(surfacePointWorld).applyMatrix4(inversePlanetMatrix)
+    approachCenter.copy(localSurfacePoint).normalize()
+    approachPivot.quaternion.setFromUnitVectors(patchAxis, approachCenter)
+    approachPivot.updateMatrix()
+    approachRotationMatrix.compose(approachPivot.position, approachPivot.quaternion, approachPivot.scale)
+    approachRotation.setFromMatrix4(approachRotationMatrix)
+    approachMaterial.uniforms.uTerrainTransform?.value.copy(approachRotation)
+    approachMaterial.uniforms.uPatchCenter?.value.copy(approachCenter)
+    if (approachMaterial.uniforms.uPatchOpacity) approachMaterial.uniforms.uPatchOpacity.value = opacity
+    if (surfaceMaterial?.uniforms.uApproachCenter) surfaceMaterial.uniforms.uApproachCenter.value.copy(approachCenter)
+    if (surfaceMaterial?.uniforms.uApproachBlend) surfaceMaterial.uniforms.uApproachBlend.value = opacity
+    if (approachMaterial.uniforms.uApproachFogStrength) {
+      approachMaterial.uniforms.uApproachFogStrength.value = SURFACE_APPROACH_CONFIG.fog.strength * opacity
+    }
+    const remainingCloudCover = PLANET_SURFACE_CONFIG.cloudCover * (1 - opacity * 0.74)
+    if (cloudMaterial?.uniforms.uCloudCover) cloudMaterial.uniforms.uCloudCover.value = remainingCloudCover
+    if (cloudMaterialSecondary?.uniforms.uCloudCover) cloudMaterialSecondary.uniforms.uCloudCover.value = remainingCloudCover
+    if (approachDust.material.uniforms.uTime) approachDust.material.uniforms.uTime.value = time
+    if (approachDust.material.uniforms.uPixelRatio) approachDust.material.uniforms.uPixelRatio.value = currentPixelRatio
+    if (approachDust.material.uniforms.uFade) approachDust.material.uniforms.uFade.value = opacity
+    approachDust.visible = opacity > 0.001
+    if (approachRocks) {
+      approachRocks.visible = opacity > 0.001
+      ;(approachRocks.material as THREE.MeshBasicMaterial).opacity = opacity
+    }
+    approachPivot.visible = opacity > 0.001 && altitude < SURFACE_APPROACH_CONFIG.activationAltitude
+  }
+
+  const createApproachFeatures = () => {
+    if (!surfaceMaterial || !surfaceMesh) return
+    approachPivot = new THREE.Group()
+    approachPivot.visible = false
+    surfaceMesh.add(approachPivot)
+
+    for (const tier of ['low', 'medium', 'high'] as const) buildApproachGeometry(tier)
+
+    approachMaterial = surfaceMaterial.clone()
+    approachMaterial.uniforms = {
+      ...surfaceMaterial.uniforms,
+      uTerrainTransform: { value: new THREE.Matrix3() },
+      uPatchCenter: { value: new THREE.Vector3(0, 0, 1) },
+      uPatchOpacity: { value: 0 },
+      uPatchAngularRadius: { value: SURFACE_APPROACH_CONFIG.patchAngularRadius },
+      uPatchEdgeFade: { value: SURFACE_APPROACH_CONFIG.patchEdgeFade },
+      uApproachFogColor: { value: new THREE.Color(SURFACE_APPROACH_CONFIG.fog.color) },
+      uApproachFogNear: { value: SURFACE_APPROACH_CONFIG.fog.near },
+      uApproachFogFar: { value: SURFACE_APPROACH_CONFIG.fog.far },
+      uApproachFogStrength: { value: SURFACE_APPROACH_CONFIG.fog.strength },
+      uApproachDetailStrength: { value: SURFACE_APPROACH_CONFIG.detailStrength }
+    }
+    approachMaterial.defines = { ...surfaceQualityDefines('medium'), APPROACH_PATCH: 1 }
+    approachMaterial.transparent = true
+    approachMaterial.depthWrite = false
+    approachMaterial.depthTest = true
+    approachMaterial.polygonOffset = true
+    approachMaterial.polygonOffsetFactor = -1
+    approachMaterial.polygonOffsetUnits = -1
+    approachMaterial.needsUpdate = true
+    approachPatch = new THREE.Mesh(approachGeometries.medium, approachMaterial)
+    approachPatch.renderOrder = 1
+    approachPatch.frustumCulled = false
+    approachPivot.add(approachPatch)
+
+    const rockGeometry = new THREE.IcosahedronGeometry(1, 0)
+    const rockPositions = rockGeometry.getAttribute('position')
+    const rockColors = new Float32Array(rockPositions.count * 3)
+    const vertex = new THREE.Vector3()
+    const faceColor = new THREE.Color()
+    for (let i = 0; i < rockPositions.count; i++) {
+      vertex.fromBufferAttribute(rockPositions, i)
+      const shade = THREE.MathUtils.clamp(0.58 + vertex.y * 0.26, 0.24, 0.92)
+      faceColor.setRGB(shade * 0.48, shade * 0.43, shade * 0.36)
+      rockColors.set([faceColor.r, faceColor.g, faceColor.b], i * 3)
+    }
+    rockGeometry.setAttribute('color', new THREE.BufferAttribute(rockColors, 3))
+    const rockMaterial = new THREE.MeshBasicMaterial({ color: SURFACE_APPROACH_CONFIG.rockColor, vertexColors: true })
+    rockMaterial.transparent = true
+    rockMaterial.opacity = 0
+    rockMaterial.depthWrite = false
+    rockMaterial.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <common>',
+        `#include <common>
+        float rockTpdf(vec2 pixel) {
+          vec2 p = floor(pixel);
+          float a = fract(sin(dot(p + vec2(19.19, 73.17), vec2(12.9898, 78.233))) * 43758.5453);
+          float b = fract(sin(dot(p + vec2(47.11, 11.73), vec2(39.3468, 11.135))) * 24634.6345);
+          return (a - b) * (1.0 / 255.0);
+        }`
+      ).replace('#include <opaque_fragment>', '#include <opaque_fragment>\ngl_FragColor.rgb += vec3(rockTpdf(gl_FragCoord.xy));')
+    }
+    rockMaterial.customProgramCacheKey = () => 'orbital-approach-rocks-dither-v1'
+    approachRocks = new THREE.InstancedMesh(rockGeometry, rockMaterial, SURFACE_APPROACH_CONFIG.scatterCount.high)
+    approachRocks.instanceMatrix.setUsage(THREE.StaticDrawUsage)
+    let seed = PLANET_SURFACE_CONFIG.seed * 7919
+    const random = () => {
+      seed = (seed * 16807) % 2147483647
+      return (seed - 1) / 2147483646
+    }
+    for (let i = 0; i < approachRocks.count; i++) {
+      const cosAngle = THREE.MathUtils.lerp(1, Math.cos(SURFACE_APPROACH_CONFIG.patchAngularRadius * 0.9), random())
+      const sinAngle = Math.sqrt(1 - cosAngle * cosAngle)
+      const around = random() * Math.PI * 2
+      const direction = new THREE.Vector3(sinAngle * Math.cos(around), sinAngle * Math.sin(around), cosAngle)
+      const sizeClass = random() < 0.09 ? 1.85 : random() < 0.34 ? 1.12 : 0.62
+      const scale = sizeClass * (0.75 + random() * 0.6)
+      rockPosition.copy(direction).multiplyScalar(radius + SURFACE_APPROACH_CONFIG.patchLift + scale * 0.32)
+      rockQuaternion.setFromUnitVectors(rockUp, direction)
+      rockQuaternion.multiply(new THREE.Quaternion().setFromAxisAngle(direction, random() * Math.PI * 2))
+      rockScale.set(scale * (0.72 + random() * 0.55), scale * (0.55 + random() * 0.65), scale * (0.7 + random() * 0.55))
+      rockMatrix.compose(rockPosition, rockQuaternion, rockScale)
+      approachRocks.setMatrixAt(i, rockMatrix)
+      rockColor.setHSL(0.08 + random() * 0.035, 0.12 + random() * 0.12, 0.27 + random() * 0.18)
+      approachRocks.setColorAt(i, rockColor)
+    }
+    approachRocks.instanceMatrix.needsUpdate = true
+    if (approachRocks.instanceColor) approachRocks.instanceColor.needsUpdate = true
+    approachRocks.frustumCulled = false
+    approachRocks.renderOrder = 2
+    approachPivot.add(approachRocks)
+
+    const dustPositions = new Float32Array(SURFACE_APPROACH_CONFIG.dust.count * 3)
+    const dustAngularRadius = Math.min(
+      SURFACE_APPROACH_CONFIG.patchAngularRadius * 0.98,
+      SURFACE_APPROACH_CONFIG.dust.radius / radius
+    )
+    for (let i = 0; i < SURFACE_APPROACH_CONFIG.dust.count; i++) {
+      const cosAngle = THREE.MathUtils.lerp(1, Math.cos(dustAngularRadius), random())
+      const sinAngle = Math.sqrt(1 - cosAngle * cosAngle)
+      const around = random() * Math.PI * 2
+      const distance = radius + SURFACE_APPROACH_CONFIG.dust.height * (0.3 + random())
+      dustPositions.set([sinAngle * Math.cos(around) * distance, sinAngle * Math.sin(around) * distance, cosAngle * distance], i * 3)
+    }
+    const dustGeometry = new THREE.BufferGeometry()
+    dustGeometry.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3))
+    const dustMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uOpacity: { value: SURFACE_APPROACH_CONFIG.dust.opacity },
+        uFade: { value: 0 },
+        uPixelRatio: { value: 1 }
+      },
+      vertexShader: `
+        uniform float uTime;
+        uniform float uPixelRatio;
+        varying float vDepth;
+        void main() {
+          vec3 drifted = position;
+          drifted.x += sin(uTime * 0.21 + position.z * 0.017) * ${(SURFACE_APPROACH_CONFIG.dust.driftRate * 18).toFixed(3)};
+          drifted.y += cos(uTime * 0.17 + position.x * 0.013) * ${(SURFACE_APPROACH_CONFIG.dust.driftRate * 12).toFixed(3)};
+          vec4 mvPosition = modelViewMatrix * vec4(drifted, 1.0);
+          vDepth = clamp(1.0 - length(mvPosition.xyz) / 700.0, 0.0, 1.0);
+          gl_PointSize = clamp(uPixelRatio * (1.0 + vDepth * 1.8), 1.0, 3.0);
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform float uOpacity;
+        uniform float uFade;
+        varying float vDepth;
+        float dustTpdf(vec2 pixel) {
+          vec2 p = floor(pixel);
+          float a = fract(sin(dot(p + vec2(19.19, 73.17), vec2(12.9898, 78.233))) * 43758.5453);
+          float b = fract(sin(dot(p + vec2(47.11, 11.73), vec2(39.3468, 11.135))) * 24634.6345);
+          return (a - b) * (1.0 / 255.0);
+        }
+        void main() {
+          float radius = length(gl_PointCoord - vec2(0.5));
+          if (radius > 0.5) discard;
+          float alpha = (1.0 - smoothstep(0.12, 0.5, radius)) * uOpacity * uFade * vDepth;
+          vec3 color = vec3(0.73, 0.62, 0.48) + vec3(dustTpdf(gl_FragCoord.xy));
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false
+    })
+    approachDust = new THREE.Points(dustGeometry, dustMaterial)
+    approachDust.frustumCulled = false
+    approachDust.renderOrder = 3
+    approachPivot.add(approachDust)
+    setApproachQuality('medium')
+  }
+
   const disposePlanetResources = () => {
+    if (approachPivot) {
+      approachPivot.parent?.remove(approachPivot)
+      approachPivot.clear()
+      approachPivot = null
+    }
+    if (approachMaterial) {
+      approachMaterial.dispose()
+      approachMaterial = null
+    }
+    if (approachRocks) {
+      approachRocks.geometry.dispose()
+      if (Array.isArray(approachRocks.material)) {
+        for (const material of approachRocks.material) material.dispose()
+      } else {
+        approachRocks.material.dispose()
+      }
+      approachRocks = null
+    }
+    if (approachDust) {
+      approachDust.geometry.dispose()
+      approachDust.material.dispose()
+      approachDust = null
+    }
+    for (const geometry of Object.values(approachGeometries)) geometry.dispose()
+
     // 1. Surface
     if (surfaceMesh) {
       if (planetRotationGroup) planetRotationGroup.remove(surfaceMesh)
@@ -186,7 +475,10 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
         uGlintStrength: { value: PLANET_SURFACE_CONFIG.glintStrength },
         uCloudShadowStrength: { value: PLANET_SURFACE_CONFIG.cloudShadowStrength.medium },
         uMoonDirection: { value: eclipseDirection },
-        uEclipseStrength: { value: 0 }
+        uEclipseStrength: { value: 0 },
+        uApproachCenter: { value: new THREE.Vector3(0, 0, 1) },
+        uApproachBlend: { value: 0 },
+        uApproachRadius: { value: SURFACE_APPROACH_CONFIG.patchAngularRadius }
       },
       defines: surfaceQualityDefines('medium')
     })
@@ -297,11 +589,13 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
 
   // Build the initial planet
   buildPlanet(currentVisual)
+  createApproachFeatures()
 
   let reducedMotion = false
 
   const setRenderQuality = (tier: RenderQualityTier, prefersReducedMotion = false) => {
     reducedMotion = prefersReducedMotion
+    setApproachQuality(tier)
     if (surfaceMaterial) {
       surfaceMaterial.defines = surfaceQualityDefines(tier)
       surfaceMaterial.needsUpdate = true
@@ -393,12 +687,22 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
 
   const precompileTerrain = async (renderer: THREE.WebGLRenderer, camera: THREE.Camera) => {
     const wasVisible = detailGroup.visible
+    const wasApproachVisible = approachPivot?.visible ?? false
+    const previousApproachOpacity = approachMaterial?.uniforms.uPatchOpacity?.value ?? 0
     detailGroup.visible = true
     setEffectsVisible(false)
+    if (approachPivot && approachMaterial) {
+      approachPivot.visible = true
+      if (approachMaterial.uniforms.uPatchOpacity) approachMaterial.uniforms.uPatchOpacity.value = 1
+    }
     try {
       await renderer.compileAsync(scene, camera)
     } finally {
       detailGroup.visible = wasVisible
+      if (approachPivot) approachPivot.visible = wasApproachVisible
+      if (approachMaterial?.uniforms.uPatchOpacity) {
+        approachMaterial.uniforms.uPatchOpacity.value = previousApproachOpacity
+      }
     }
   }
 
@@ -429,6 +733,7 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
     setDetailsVisible,
     setEffectsVisible,
     setRenderQuality,
+    updateApproach,
     setAtmosphereCameraRadius,
     cleanup,
     get surfaceRotation() {
