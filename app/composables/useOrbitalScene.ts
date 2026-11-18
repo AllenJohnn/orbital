@@ -77,6 +77,13 @@ export const useOrbitalScene = (
   const cameraForward = new THREE.Vector3()
   const sunScreen = new THREE.Vector3()
   const glarePosition = new THREE.Vector3()
+  const planetScreenCenter = new THREE.Vector3()
+  const glareOcclusionUniforms = {
+    center: { value: new THREE.Vector2() },
+    radius: { value: new THREE.Vector2(1, 1) },
+    resolution: { value: new THREE.Vector2(1, 1) },
+    softness: { value: 0.02 }
+  }
   const systemOrbitAxisX = sunDir.clone().negate().normalize()
   const systemOrbitNormal = systemOrbitAxisX.clone().cross(new THREE.Vector3(0, 1, 0)).normalize()
   const systemOrbitAxisY = systemOrbitNormal.clone().cross(systemOrbitAxisX).normalize()
@@ -605,6 +612,30 @@ export const useOrbitalScene = (
       depthWrite: false,
       toneMapped: false
     })
+    glareMaterial.onBeforeCompile = (shader) => {
+      shader.uniforms.uPlanetScreenCenter = glareOcclusionUniforms.center
+      shader.uniforms.uPlanetScreenRadius = glareOcclusionUniforms.radius
+      shader.uniforms.uGlareResolution = glareOcclusionUniforms.resolution
+      shader.uniforms.uOcclusionSoftness = glareOcclusionUniforms.softness
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <common>',
+        `#include <common>
+        uniform vec2 uPlanetScreenCenter;
+        uniform vec2 uPlanetScreenRadius;
+        uniform vec2 uGlareResolution;
+        uniform float uOcclusionSoftness;`
+      ).replace(
+        '#include <fog_fragment>',
+        `#include <fog_fragment>
+        vec2 glareScreenNdc = (gl_FragCoord.xy / uGlareResolution) * 2.0 - 1.0;
+        vec2 planetDiscCoord = (glareScreenNdc - uPlanetScreenCenter) / max(uPlanetScreenRadius, vec2(0.0001));
+        float discCoverage = 1.0 - smoothstep(1.0 - uOcclusionSoftness, 1.0 + uOcclusionSoftness, length(planetDiscCoord));
+        float flareTransmission = mix(0.045, 1.0, 1.0 - discCoverage);
+        gl_FragColor.rgb *= flareTransmission;
+        gl_FragColor.a *= flareTransmission;`
+      )
+    }
+    glareMaterial.customProgramCacheKey = () => 'orbital-soft-disc-occlusion-v1'
     glareSprite = new THREE.Sprite(glareMaterial)
     glareSprite.visible = false
     glareSprite.renderOrder = 1000
@@ -612,6 +643,14 @@ export const useOrbitalScene = (
 
     const initialVisual = kepler186System.planets[0]?.visual
     planetController = usePlanet(scene, initialVisual, kepler186System.starColor)
+    if (import.meta.dev && new URLSearchParams(window.location.search).has('debugShells')) {
+      planetController.planetGroup.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          const materials = Array.isArray(object.material) ? object.material : [object.material]
+          for (const material of materials) material.wireframe = true
+        }
+      })
+    }
     applyCelestialQuality()
 
     const precompileCurrentPlanet = (keepHiddenOnFailure = false) => {
@@ -773,7 +812,7 @@ export const useOrbitalScene = (
     const rayProjection = finalPos.dot(sunDir)
     const rayDiscriminant = rayProjection * rayProjection - (finalPos.lengthSq() - 400 * 400)
     const sunVisibility = rayProjection < 0
-      ? 1.0 - THREE.MathUtils.smoothstep(rayDiscriminant, -4000, 5000)
+      ? 1.0 - THREE.MathUtils.smoothstep(rayDiscriminant, -9000, 9000)
       : 1.0
     const flareFade = 1 - THREE.MathUtils.smoothstep(p, SYSTEM_REVEAL_AT - 0.08, SYSTEM_REVEAL_AT + 0.04)
     const activeGlare = Math.pow(lensAlignment, 0.85) * sunVisibility * flareFade
@@ -781,6 +820,18 @@ export const useOrbitalScene = (
     if (activeGlare > 0.005) {
       camera.updateMatrixWorld()
       sunScreen.copy(sunMesh.position).project(camera)
+      planetScreenCenter.set(0, 0, 0).project(camera)
+      const planetDistance = camera.position.length()
+      const glareDiscAngularRadius = planetDistance > 400
+        ? Math.asin(THREE.MathUtils.clamp(400 / planetDistance, 0, 0.999))
+        : Math.PI * 0.49
+      const planetRadiusNdcY = Math.tan(glareDiscAngularRadius) / Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5))
+      const outputWidth = renderer.domElement.width
+      const outputHeight = renderer.domElement.height
+      glareOcclusionUniforms.center.value.set(planetScreenCenter.x, planetScreenCenter.y)
+      glareOcclusionUniforms.radius.value.set(planetRadiusNdcY / camera.aspect, planetRadiusNdcY)
+      glareOcclusionUniforms.resolution.value.set(outputWidth, outputHeight)
+      glareOcclusionUniforms.softness.value = Math.max(0.008, 8 / Math.max(1, outputHeight * planetRadiusNdcY * 0.5))
       right.setFromMatrixColumn(camera.matrixWorld, 0)
       up.setFromMatrixColumn(camera.matrixWorld, 1)
       const distance = 8
