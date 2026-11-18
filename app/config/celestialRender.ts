@@ -13,10 +13,10 @@ export const CELESTIAL_RENDER_CONFIG = {
       medium: 10,
       high: 16
     },
-    twilightStrength: 0.24
+    twilightStrength: 0.18
   },
   aurora: {
-    strength: 0.1,
+    strength: 0.045,
     curtainScale: 13,
     motionRate: 0.055
   },
@@ -31,9 +31,9 @@ export const CELESTIAL_RENDER_CONFIG = {
   },
   milkyWay: {
     opacity: {
-      high: 0.13,
-      medium: 0.09,
-      low: 0.035
+      high: 0.08,
+      medium: 0.055,
+      low: 0.025
     }
   }
 } as const

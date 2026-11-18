@@ -286,7 +286,9 @@ float getElevation(vec3 p, float distToCam) {
   }
   
   // Combine Macro & Regional
-  float elevation = baseTerrain * 0.35 + 0.4;
+  // Keep broad basins under the configured 0.55 sea level so deep water is
+  // a visible planetary biome from orbit instead of a narrow coastal accent.
+  float elevation = baseTerrain * 0.32 + 0.36;
   elevation += tectonicElevation;
   elevation += basins * 0.25;
   
@@ -405,7 +407,10 @@ void main() {
   float isIce = 0.0;
   float specular = 0.0;
   float oceanGlint = 0.0;
-  float diffuse = max(dot(finalNormal, sunDir), 0.0);
+  float terminatorLight = dot(finalNormal, sunDir);
+  float directDiffuse = max(terminatorLight, 0.0);
+  float wrappedDiffuse = max((terminatorLight + 0.16) / 1.16, 0.0);
+  float diffuse = mix(directDiffuse, wrappedDiffuse, 0.22);
   float moonShadow = smoothstep(0.996, 0.999, dot(worldNormal, normalize(uMoonDirection))) * uEclipseStrength;
   diffuse *= 1.0 - moonShadow * 0.92;
 
@@ -501,7 +506,7 @@ void main() {
     albedo = mix(albedo, goldCol, goldenMask);
     landSpec = mix(landSpec, 0.15, goldenMask); // Pale minerals are slightly more reflective
     
-    albedo = mix(albedo, marsCol, mineralMask); // Mars overrides Gold
+    albedo = mix(albedo, marsCol, mineralMask * 0.78); // Keep rust highlands as an accent
     landSpec = mix(landSpec, 0.01, mineralMask); // Iron desert is very matte
     vec3 dustPlains = mix(uPalette1 * vec3(1.25, 1.12, 0.94), uPalette2 * vec3(0.72, 0.61, 0.48), h);
     albedo = mix(albedo, dustPlains, dustMask * (1.0 - mineralMask * 0.55));
@@ -522,7 +527,7 @@ void main() {
     vec3 crackedIce = mix(ice, ice * vec3(0.46, 0.62, 0.79), iceCracks * 0.28);
     albedo = mix(albedo, crackedIce, isIce);
     albedo *= mix(vec3(1.0), vec3(0.72, 0.84, 1.0), isIce * (1.0 - diffuse) * 0.24);
-    landSpec = mix(landSpec, 0.8, isIce); // Ice is highly reflective
+    landSpec = mix(landSpec, 0.42, isIce); // Ice keeps a narrow, restrained highlight
 
     // Fine mineral grain and exposed strata give plains and uplands distinct texture.
     float mineralVein = smoothstep(0.64, 0.82, 1.0 - abs(strataGrain + surfaceGrain * 0.24));
@@ -553,8 +558,10 @@ void main() {
     max(max(diffuse, ndotv), 0.08);
   float orenDiffuse = diffuse * (orenA + orenB * sinAlpha * tanBeta);
   vec3 ambient = albedo * 0.018;
-  vec3 finalColor = albedo * orenDiffuse * 1.48 + vec3(specular) +
-    uStarColor * oceanGlint * 0.68 + ambient;
+  // Keep the star's warmth in the scattering, not in the base albedo. The
+  // reduced direct-light gain also compensates for the ACES post pass.
+  vec3 finalColor = albedo * orenDiffuse * 1.08 + vec3(specular * 0.52) +
+    uStarColor * oceanGlint * 0.48 + ambient;
   
   // Carry a little volume inscatter onto the terrain silhouette so the opaque
   // surface and transparent atmosphere meet without a hard edge.
@@ -564,19 +571,20 @@ void main() {
   float twilightBand = exp(-pow((terminator + 0.015) / 0.2, 2.0));
   float softTerminator = exp(-pow(terminator / 0.17, 2.0));
   float atmosphereDepth = clamp(uAtmosphereHeight / 32.0, 0.2, 1.5);
-  vec3 spectralInscatter = uStarColor * (
+  vec3 spectralSource = mix(uStarColor, uAtmosphereColor, 0.68);
+  vec3 spectralInscatter = spectralSource * (
     uRayleighCoefficients * 0.18 + uMieCoefficients * 0.42
   );
-  vec3 warmTwilight = uStarColor * vec3(1.0, 0.34, 0.16);
+  vec3 warmTwilight = vec3(0.58, 0.18, 0.11);
   float limbHaze = limbPath * atmosphereDepth * uAtmosphereThickness;
   finalColor *= 1.0 - limbHaze * 0.08;
   finalColor += spectralInscatter * limbHaze * (0.45 + twilightBand * 0.8);
-  finalColor += warmTwilight * twilightBand * limbPath * uAtmosphereThickness * 0.12;
-  finalColor += warmTwilight * softTerminator * 0.045;
+  finalColor += warmTwilight * twilightBand * limbPath * uAtmosphereThickness * 0.075;
+  finalColor += warmTwilight * softTerminator * 0.028;
   
   // Subtle night-side environmental fill (so dark side isn't pure black, preserving terrain readability)
-  vec3 nightAmbient = albedo * (vec3(0.028, 0.043, 0.071) + uAtmosphereColor * 0.026);
-  finalColor += nightAmbient * (1.0 - smoothstep(-0.12, 0.36, terminator)) * 0.72;
+  vec3 nightAmbient = albedo * (vec3(0.025, 0.038, 0.068) + uAtmosphereColor * 0.022);
+  finalColor += nightAmbient * (1.0 - smoothstep(-0.16, 0.34, terminator)) * 0.9;
   
   // --------------------------------------------------------
   // ANCIENT CITY LIGHTS (Points of Interest Foundation)
@@ -668,8 +676,9 @@ void main() {
 #ifdef ATMOSPHERE_LOW_QUALITY
   float warmTerminator = exp(-pow((sunFacing + 0.02) / 0.22, 2.0));
   float nightWrap = (1.0 - smoothstep(-0.34, 0.12, sunFacing)) * rim;
-  vec3 lowColor = uStarColor * (uRayleighCoefficients * 0.055 + uMieCoefficients * 0.12);
-  lowColor += uStarColor * vec3(1.0, 0.34, 0.12) * warmTerminator * rim * 0.11;
+  vec3 lowSource = mix(uStarColor, uAtmosphereColor, 0.68);
+  vec3 lowColor = lowSource * (uRayleighCoefficients * 0.055 + uMieCoefficients * 0.12);
+  lowColor += vec3(0.58, 0.18, 0.11) * warmTerminator * rim * 0.06;
   lowColor += vec3(0.018, 0.032, 0.06) * nightWrap;
   gl_FragColor = vec4(lowColor * uAtmosphereThickness, 1.0);
 #else
@@ -710,7 +719,8 @@ void main() {
       uRayleighCoefficients * rayleighDensity * phaseR +
       uMieCoefficients * mieDensity * phaseM
     ) * sunTransmittance * viewTransmittance * groundShadow;
-    inscatter += scattering * stepLength * uStarColor * 2.2;
+    vec3 coolScatteringSource = mix(uStarColor, uAtmosphereColor, 0.68);
+    inscatter += scattering * stepLength * coolScatteringSource * 1.35;
     opticalDepth += (
       uRayleighCoefficients * rayleighDensity +
       uMieCoefficients * mieDensity
@@ -719,8 +729,8 @@ void main() {
 
   float twilightBand = exp(-pow((sunFacing + 0.015) / 0.19, 2.0));
   float nightSide = 1.0 - smoothstep(-0.34, 0.08, sunFacing);
-  vec3 warmTwilight = uStarColor * vec3(1.0, 0.3, 0.09) * twilightBand * rim * uTwilightStrength;
-  vec3 nightHaze = vec3(0.024, 0.032, 0.058) * nightSide * rim * 0.22;
+  vec3 warmTwilight = vec3(0.64, 0.20, 0.12) * twilightBand * rim * uTwilightStrength * 0.62;
+  vec3 nightHaze = vec3(0.035, 0.041, 0.085) * nightSide * rim * 0.24;
   vec3 finalScatter = inscatter + warmTwilight + nightHaze;
 
   // Polar curtains fade on the night side and as the camera aligns with the
@@ -733,7 +743,7 @@ void main() {
   float curtain = smoothstep(-0.36, 0.5, curtainWave) * (0.45 + 0.55 * abs(curtainWave));
   float auroraAlignmentFade = 1.0 - smoothstep(0.55, 0.92, uViewSunAlignment);
   float aurora = polarBand * polarNight * curtain * uAuroraStrength * auroraAlignmentFade;
-  finalScatter += vec3(0.055, 0.42, 0.31) * aurora;
+  finalScatter += vec3(0.12, 0.20, 0.42) * aurora;
 
   gl_FragColor = vec4(finalScatter * uAtmosphereThickness, 1.0);
 #endif
@@ -830,8 +840,8 @@ void main() {
   float terminator = smoothstep(-0.2, 0.2, dot(normal, sunDir));
   
   // Color formulation
-  vec3 cloudLit = vec3(0.78, 0.82, 0.84);
-  vec3 cloudSunset = vec3(0.82, 0.39, 0.23);
+  vec3 cloudLit = vec3(0.62, 0.70, 0.78);
+  vec3 cloudSunset = vec3(0.42, 0.25, 0.24);
   vec3 cloudDark = vec3(0.025, 0.038, 0.055);
   vec3 baseColor = mix(cloudSunset, cloudLit, smoothstep(-0.08, 0.46, dot(normal, sunDir)));
   vec3 cloudColor = baseColor * (0.22 + diffuse * 1.06);
@@ -848,8 +858,8 @@ void main() {
   float distToCam = length(cameraPosition - vPositionWorld);
   float proximityFade = smoothstep(2.0, 15.0, distToCam);
   
-  float layerOpacity = mix(0.44, 0.31, uCloudLayer);
-  float finalAlpha = coverage * mix(0.28, layerOpacity, thickClouds) * proximityFade;
+  float layerOpacity = mix(0.32, 0.24, uCloudLayer);
+  float finalAlpha = coverage * mix(0.22, layerOpacity, thickClouds) * proximityFade;
   
   gl_FragColor = vec4(cloudColor, finalAlpha);
 }

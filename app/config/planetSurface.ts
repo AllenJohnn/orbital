@@ -12,7 +12,7 @@ export const PLANET_SURFACE_CONFIG = {
   iceAmount: 0.35,
   cloudCover: 0.55,
   foamStrength: 0.58,
-  glintStrength: 0.76,
+  glintStrength: 0.54,
   cloudShadowStrength: {
     low: 0,
     medium: 0.22,

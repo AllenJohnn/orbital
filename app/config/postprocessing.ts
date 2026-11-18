@@ -1,7 +1,7 @@
 export const POST_PROCESSING_CONFIG = {
   bloom: {
-    intensity: 0.48,
-    luminanceThreshold: 1.2,
+    intensity: 0.34,
+    luminanceThreshold: 1.55,
     luminanceSmoothing: 0.16,
     radius: 0.62,
     levels: 5
