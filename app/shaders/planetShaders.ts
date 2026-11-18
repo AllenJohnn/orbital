@@ -48,6 +48,13 @@ varying vec3 vPositionWorld;
 
 ${snoise3}
 
+float tpdfDither(vec2 pixel) {
+  vec2 p = floor(pixel);
+  float a = fract(sin(dot(p + vec2(19.19, 73.17), vec2(12.9898, 78.233))) * 43758.5453);
+  float b = fract(sin(dot(p + vec2(47.11, 11.73), vec2(39.3468, 11.135))) * 24634.6345);
+  return (a - b) * (1.0 / 255.0);
+}
+
 // --------------------------------------------------------
 // NOISE & GEOMETRY UTILITIES
 // --------------------------------------------------------
@@ -560,25 +567,26 @@ void main() {
   vec3 ambient = albedo * 0.018;
   // Keep the star's warmth in the scattering, not in the base albedo. The
   // reduced direct-light gain also compensates for the ACES post pass.
-  vec3 finalColor = albedo * orenDiffuse * 1.08 + vec3(specular * 0.52) +
-    uStarColor * oceanGlint * 0.48 + ambient;
+  vec3 warmDirectLight = mix(vec3(1.0), uStarColor, 0.14);
+  vec3 finalColor = albedo * orenDiffuse * 1.08 * warmDirectLight + vec3(specular * 0.34) +
+    uStarColor * oceanGlint * 0.3 + ambient;
   
   // Carry a little volume inscatter onto the terrain silhouette so the opaque
   // surface and transparent atmosphere meet without a hard edge.
   float viewFacing = max(dot(normalize(worldNormal), normalize(viewDir)), 0.0);
-  float limbPath = pow(1.0 - viewFacing, 3.2);
+  float limbPath = pow(1.0 - viewFacing, 4.2);
   float terminator = dot(finalNormal, sunDir);
   float twilightBand = exp(-pow((terminator + 0.015) / 0.2, 2.0));
   float softTerminator = exp(-pow(terminator / 0.17, 2.0));
   float atmosphereDepth = clamp(uAtmosphereHeight / 32.0, 0.2, 1.5);
-  vec3 spectralSource = mix(uStarColor, uAtmosphereColor, 0.68);
+  vec3 spectralSource = mix(uStarColor, uAtmosphereColor, 0.38);
   vec3 spectralInscatter = spectralSource * (
     uRayleighCoefficients * 0.18 + uMieCoefficients * 0.42
   );
   vec3 warmTwilight = vec3(0.58, 0.18, 0.11);
   float limbHaze = limbPath * atmosphereDepth * uAtmosphereThickness;
   finalColor *= 1.0 - limbHaze * 0.08;
-  finalColor += spectralInscatter * limbHaze * (0.45 + twilightBand * 0.8);
+  finalColor += spectralInscatter * limbHaze * (0.45 + twilightBand * 0.8) * 0.72;
   finalColor += warmTwilight * twilightBand * limbPath * uAtmosphereThickness * 0.075;
   finalColor += warmTwilight * softTerminator * 0.028;
   
@@ -605,6 +613,9 @@ void main() {
     }
   }
 
+  float peakChannel = max(max(finalColor.r, finalColor.g), finalColor.b);
+  finalColor *= 1.0 / (1.0 + max(peakChannel - 0.72, 0.0) * 1.8);
+  finalColor += vec3(tpdfDither(gl_FragCoord.xy));
   gl_FragColor = vec4(finalColor, 1.0);
 }
 `
@@ -663,6 +674,13 @@ float miePhase(float cosine, float g) {
   return (1.0 - g2) / (denominator * sqrt(denominator));
 }
 
+float tpdfDither(vec2 pixel) {
+  vec2 p = floor(pixel);
+  float a = fract(sin(dot(p + vec2(19.19, 73.17), vec2(12.9898, 78.233))) * 43758.5453);
+  float b = fract(sin(dot(p + vec2(47.11, 11.73), vec2(39.3468, 11.135))) * 24634.6345);
+  return (a - b) * (1.0 / 255.0);
+}
+
 void main() {
   vec3 normal = normalize(vNormalWorld);
   vec3 sunDir = normalize(uSunDirection);
@@ -671,6 +689,7 @@ void main() {
   vec3 viewDirection = -rayDirection;
   float facing = max(dot(normal, viewDirection), 0.0);
   float rim = pow(1.0 - facing, 2.25);
+  float viewRim = pow(1.0 - facing, 2.6);
   float sunFacing = dot(normalize(vPositionWorld), sunDir);
 
 #ifdef ATMOSPHERE_LOW_QUALITY
@@ -680,6 +699,11 @@ void main() {
   vec3 lowColor = lowSource * (uRayleighCoefficients * 0.055 + uMieCoefficients * 0.12);
   lowColor += vec3(0.58, 0.18, 0.11) * warmTerminator * rim * 0.06;
   lowColor += vec3(0.018, 0.032, 0.06) * nightWrap;
+  lowColor *= mix(0.08, 1.0, viewRim);
+  float lowPeak = max(max(lowColor.r, lowColor.g), lowColor.b);
+  lowColor -= max(lowColor - vec3(0.34), vec3(0.0)) *
+    (0.38 * smoothstep(0.34, 1.1, lowPeak));
+  lowColor += vec3(tpdfDither(gl_FragCoord.xy));
   gl_FragColor = vec4(lowColor * uAtmosphereThickness, 1.0);
 #else
   vec2 atmosphereRoots = sphereRoots(rayOrigin, rayDirection, uPlanetRadius + uAtmosphereHeight);
@@ -696,6 +720,7 @@ void main() {
   float phaseM = miePhase(cosineTheta, uMieAnisotropy);
   vec3 opticalDepth = vec3(0.0);
   vec3 inscatter = vec3(0.0);
+  vec3 coolScatteringSource = mix(uStarColor, uAtmosphereColor, 0.36);
   float stepLength = rayLength / float(ATMOSPHERE_STEPS);
 
   for (int i = 0; i < ATMOSPHERE_STEPS; i++) {
@@ -719,8 +744,7 @@ void main() {
       uRayleighCoefficients * rayleighDensity * phaseR +
       uMieCoefficients * mieDensity * phaseM
     ) * sunTransmittance * viewTransmittance * groundShadow;
-    vec3 coolScatteringSource = mix(uStarColor, uAtmosphereColor, 0.68);
-    inscatter += scattering * stepLength * coolScatteringSource * 1.35;
+    inscatter += scattering * stepLength * coolScatteringSource * 0.72;
     opticalDepth += (
       uRayleighCoefficients * rayleighDensity +
       uMieCoefficients * mieDensity
@@ -731,7 +755,10 @@ void main() {
   float nightSide = 1.0 - smoothstep(-0.34, 0.08, sunFacing);
   vec3 warmTwilight = vec3(0.64, 0.20, 0.12) * twilightBand * rim * uTwilightStrength * 0.62;
   vec3 nightHaze = vec3(0.035, 0.041, 0.085) * nightSide * rim * 0.24;
-  vec3 finalScatter = inscatter + warmTwilight + nightHaze;
+  // Keep most atmospheric color at grazing angles so the surface reads
+  // through the center of the planet disc.
+  float scatterRimWeight = mix(0.08, 1.0, viewRim);
+  vec3 finalScatter = inscatter * scatterRimWeight + warmTwilight + nightHaze;
 
   // Polar curtains fade on the night side and as the camera aligns with the
   // star, keeping them subordinate to the solar rim and glare.
@@ -745,6 +772,9 @@ void main() {
   float aurora = polarBand * polarNight * curtain * uAuroraStrength * auroraAlignmentFade;
   finalScatter += vec3(0.12, 0.20, 0.42) * aurora;
 
+  float atmospherePeak = max(max(finalScatter.r, finalScatter.g), finalScatter.b);
+  finalScatter *= 1.0 / (1.0 + max(atmospherePeak - 0.34, 0.0) * 1.8);
+  finalScatter += vec3(tpdfDither(gl_FragCoord.xy));
   gl_FragColor = vec4(finalScatter * uAtmosphereThickness, 1.0);
 #endif
 }
@@ -777,6 +807,13 @@ varying vec3 vNormalLocal;
 varying vec3 vPositionWorld;
 
 ${snoise3}
+
+float tpdfDither(vec2 pixel) {
+  vec2 p = floor(pixel);
+  float a = fract(sin(dot(p + vec2(19.19, 73.17), vec2(12.9898, 78.233))) * 43758.5453);
+  float b = fract(sin(dot(p + vec2(47.11, 11.73), vec2(39.3468, 11.135))) * 24634.6345);
+  return (a - b) * (1.0 / 255.0);
+}
 
 float cloudFbm(vec3 p) {
   float sum = 0.0;
@@ -860,7 +897,10 @@ void main() {
   
   float layerOpacity = mix(0.32, 0.24, uCloudLayer);
   float finalAlpha = coverage * mix(0.22, layerOpacity, thickClouds) * proximityFade;
-  
+  float cloudPeak = max(max(cloudColor.r, cloudColor.g), cloudColor.b);
+  cloudColor *= 1.0 / (1.0 + max(cloudPeak - 0.58, 0.0) * 1.8);
+
+  cloudColor += vec3(tpdfDither(gl_FragCoord.xy));
   gl_FragColor = vec4(cloudColor, finalAlpha);
 }
 `
@@ -875,6 +915,13 @@ varying vec3 vNormalLocal;
 varying vec3 vPositionWorld;
 
 ${snoise3}
+
+float tpdfDither(vec2 pixel) {
+  vec2 p = floor(pixel);
+  float a = fract(sin(dot(p + vec2(19.19, 73.17), vec2(12.9898, 78.233))) * 43758.5453);
+  float b = fract(sin(dot(p + vec2(47.11, 11.73), vec2(39.3468, 11.135))) * 24634.6345);
+  return (a - b) * (1.0 / 255.0);
+}
 
 float moonHash(vec3 p) {
   return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
@@ -929,6 +976,7 @@ void main() {
   vec3 ambient = color * 0.02;
   vec3 finalColor = color * diffuse * 1.5 + ambient;
 
+  finalColor += vec3(tpdfDither(gl_FragCoord.xy));
   gl_FragColor = vec4(finalColor, 1.0);
 }
 `

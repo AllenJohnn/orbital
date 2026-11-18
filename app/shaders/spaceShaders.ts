@@ -94,6 +94,13 @@ float valueNoise3(vec3 p) {
   return mix(z0, z1, f.z);
 }
 
+float tpdfDither(vec2 pixel) {
+  vec2 p = floor(pixel);
+  float a = fract(sin(dot(p + vec2(19.19, 73.17), vec2(12.9898, 78.233))) * 43758.5453);
+  float b = fract(sin(dot(p + vec2(47.11, 11.73), vec2(39.3468, 11.135))) * 24634.6345);
+  return (a - b) * (1.0 / 255.0);
+}
+
 void main() {
   vec3 direction = normalize(vSkyDirection);
   vec3 bandNormal = normalize(vec3(0.27, 0.88, -0.39));
@@ -112,6 +119,7 @@ void main() {
 
   float warmDust = smoothstep(-0.25, 0.65, direction.x - direction.z * 0.4);
   vec3 nebulaColor = mix(vec3(0.2, 0.31, 0.48), vec3(0.48, 0.31, 0.23), warmDust);
+  nebulaColor += vec3(tpdfDither(gl_FragCoord.xy));
   float alpha = clamp(density * uOpacity, 0.0, 0.24);
   gl_FragColor = vec4(nebulaColor * alpha, alpha);
 }
