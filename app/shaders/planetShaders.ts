@@ -178,8 +178,12 @@ float getImpactBasin(vec3 p, float scale, float probability, float depthMult) {
 
 float getImpactHistory(vec3 p, float distToCam) {
 #ifdef PLANET_LOW_QUALITY
-    return getImpactBasin(p, 1.1, 0.045, 0.75) * 0.32;
+    return -smoothstep(-0.28, 0.64, terrainFbm(p * 1.35 + vec3(uTerrainSeed * 0.008))) * 0.12;
 #else
+    if (distToCam > 4300.0) {
+      float broadBasin = terrainFbm(p * 1.45 + vec3(uTerrainSeed * 0.008));
+      return -smoothstep(-0.25, 0.58, broadBasin) * 0.22;
+    }
     // 4-Tier Hierarchy: Mega, Large, Medium, Small
     float basins = getImpactBasin(p, 1.2, 0.08, 1.5);    // Mega basins (very rare, huge impact, deep)
     
@@ -230,6 +234,13 @@ float getElevation(vec3 p, float distToCam) {
   // Keep broad plate boundaries visible from the opening orbit. Fine peaks fade
   // in as the camera approaches so the silhouette stays stable at distance.
   if (distToCam < 6500.0) {
+      if (distToCam > 4300.0) {
+          // A cheap ridged approximation preserves visible mountain arcs from
+          // orbit while avoiding a Voronoi neighborhood search per pixel.
+          float farFault = ridgedFBM(seededP * 1.32 + domainWarp * 0.3);
+          float farMask = smoothstep(0.49, 0.78, terrainFbm(seededP * 1.1 + 3.7));
+          tectonicElevation += farMask * farFault * 0.11;
+      } else {
       vec3 tec = voronoiTectonic(seededP * 1.45 + domainWarp * 0.5 + warp * 0.24);
       float boundaryDist = tec.y - tec.x; 
       float faultType = tec.z;
@@ -260,6 +271,7 @@ float getElevation(vec3 p, float distToCam) {
           float canyonMask = exp(-boundaryDist * 24.0) * smoothstep(-0.35, 0.25, canyonNoise);
           tectonicElevation -= canyonMask * 0.28;
       }
+      }
   }
   
   // 3. IMPACT HISTORY (Macro & Regional)
@@ -267,6 +279,9 @@ float getElevation(vec3 p, float distToCam) {
   float basinMask = smoothstep(-0.2, 0.6, continents); 
   float basins = 0.0;
   if (basinMask > 0.01) {
+#ifndef PLANET_LOW_QUALITY
+    if (distToCam < 4300.0)
+#endif
     basins = getImpactHistory(p, distToCam) * basinMask;
   }
   
@@ -389,6 +404,7 @@ void main() {
   float isLand = 0.0;
   float isIce = 0.0;
   float specular = 0.0;
+  float oceanGlint = 0.0;
   float diffuse = max(dot(finalNormal, sunDir), 0.0);
   float moonShadow = smoothstep(0.996, 0.999, dot(worldNormal, normalize(uMoonDirection))) * uEclipseStrength;
   diffuse *= 1.0 - moonShadow * 0.92;
@@ -450,8 +466,8 @@ void main() {
     float wind = snoise(localNormal * 2.8 + vec3(uTime * 0.004, 4.7, -2.1));
     float waveRoughness = clamp(0.84 + wind * 0.13 + surfaceGrain * 0.08, 0.55, 1.0);
     float specPower = mix(188.0, 62.0, depth) * waveRoughness;
-    float sunGlint = pow(specAngle, 170.0) * uGlintStrength;
-    specular = pow(specAngle, specPower) * mix(1.45, 0.68, depth) * waveRoughness + sunGlint;
+    oceanGlint = pow(specAngle, 170.0) * uGlintStrength;
+    specular = pow(specAngle, specPower) * mix(1.45, 0.68, depth) * waveRoughness;
   } else {
     // --------------------------------------------------------
     // LAND GEOLOGY
@@ -505,6 +521,7 @@ void main() {
     float iceCracks = 1.0 - smoothstep(0.91, 0.985, abs(terrainFbm(localNormal * 46.0 + vec3(8.2, -3.1, 5.7))));
     vec3 crackedIce = mix(ice, ice * vec3(0.46, 0.62, 0.79), iceCracks * 0.28);
     albedo = mix(albedo, crackedIce, isIce);
+    albedo *= mix(vec3(1.0), vec3(0.72, 0.84, 1.0), isIce * (1.0 - diffuse) * 0.24);
     landSpec = mix(landSpec, 0.8, isIce); // Ice is highly reflective
 
     // Fine mineral grain and exposed strata give plains and uplands distinct texture.
@@ -536,7 +553,8 @@ void main() {
     max(max(diffuse, ndotv), 0.08);
   float orenDiffuse = diffuse * (orenA + orenB * sinAlpha * tanBeta);
   vec3 ambient = albedo * 0.018;
-  vec3 finalColor = albedo * orenDiffuse * 1.48 + vec3(specular) + ambient;
+  vec3 finalColor = albedo * orenDiffuse * 1.48 + vec3(specular) +
+    uStarColor * oceanGlint * 0.68 + ambient;
   
   // Carry a little volume inscatter onto the terrain silhouette so the opaque
   // surface and transparent atmosphere meet without a hard edge.
