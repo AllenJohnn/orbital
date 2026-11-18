@@ -30,6 +30,15 @@ uniform vec3 uStarColor;
 uniform vec3 uRayleighCoefficients;
 uniform vec3 uMieCoefficients;
 uniform float uAtmosphereHeight;
+uniform float uTerrainSeed;
+uniform float uReliefStrength;
+uniform vec3 uOceanDeepColor;
+uniform vec3 uOceanShallowColor;
+uniform vec3 uOceanShelfColor;
+uniform vec3 uFoamColor;
+uniform float uFoamStrength;
+uniform float uGlintStrength;
+uniform float uCloudShadowStrength;
 varying vec2 vUv;
 varying vec3 vNormalWorld;
 varying vec3 vNormalLocal;
@@ -112,6 +121,20 @@ float ridgedFBM(vec3 p) {
   return v;
 }
 
+float terrainFbm(vec3 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  float normalization = 0.0;
+  for (int octave = 0; octave < 5; ++octave) {
+    if (octave >= TERRAIN_OCTAVES) break;
+    value += snoise(p) * amplitude;
+    normalization += amplitude;
+    p = p * 2.03 + vec3(17.1, 9.2, 13.7);
+    amplitude *= 0.5;
+  }
+  return value / max(normalization, 0.001);
+}
+
 // --------------------------------------------------------
 // GEOLOGICAL FORMATIONS
 // --------------------------------------------------------
@@ -176,12 +199,22 @@ float getImpactHistory(vec3 p, float distToCam) {
 
 // Master Elevation Function (Distance-Aware LOD)
 float getElevation(vec3 p, float distToCam) {
-  // Domain warping for organic shapes
-  vec3 warp = vec3(fbm(p * 1.2), fbm(p * 1.2 + vec3(5.2)), fbm(p * 1.2 + vec3(1.3)));
+  // A fixed seed offsets every layer, so the map stays identical between loads.
+  vec3 seededP = p + vec3(uTerrainSeed * 0.013, uTerrainSeed * -0.009, uTerrainSeed * 0.017);
+  vec3 warp = vec3(
+    terrainFbm(seededP * 1.2 + vec3(5.2)),
+    terrainFbm(seededP * 1.2 + vec3(11.7, 2.4, 5.2)),
+    terrainFbm(seededP * 1.2 + vec3(1.3, 8.6, 12.1))
+  );
+  vec3 domainWarp = vec3(
+    snoise(seededP * 1.05 + 4.1),
+    snoise(seededP * 1.05 + 17.3),
+    snoise(seededP * 1.05 - 8.7)
+  ) * 0.38;
   
-  // 1. MACRO: Continental Plates & Oceans (Low Frequency, High Amplitude)
-  float continents = snoise(p * 0.8 + warp * 0.5); // -1 to 1
-  float baseTerrain = continents * 0.5 + 0.5; // 0 to 1
+  // Broad warped fBm forms continent-sized basins and rust-colored highlands.
+  float continents = terrainFbm(seededP * 0.82 + domainWarp + warp * 0.42);
+  float baseTerrain = smoothstep(-0.48, 0.48, continents);
   
   // 2. REGIONAL: Tectonics, Mountain Belts, and Canyons
   float tectonicElevation = 0.0;
@@ -190,7 +223,7 @@ float getElevation(vec3 p, float distToCam) {
   // Keep broad plate boundaries visible from the opening orbit. Fine peaks fade
   // in as the camera approaches so the silhouette stays stable at distance.
   if (distToCam < 6500.0) {
-      vec3 tec = voronoiTectonic(p * 1.4 + warp * 0.2);
+      vec3 tec = voronoiTectonic(seededP * 1.45 + domainWarp * 0.5 + warp * 0.24);
       float boundaryDist = tec.y - tec.x; 
       float faultType = tec.z;
       
@@ -199,20 +232,26 @@ float getElevation(vec3 p, float distToCam) {
       // DE-CLUTTER: Only 15% of faults generate mountain ranges (was 60%)
       if (faultType > 0.85) {
           // Convergent: Mountain Range along the tectonic plate
-          mountainMask = faultLine * smoothstep(0.1, 0.9, fbm(p * 2.5)); 
+          mountainMask = faultLine * smoothstep(0.0, 0.72, terrainFbm(seededP * 2.5 + domainWarp));
           float peakFade = smoothstep(5800.0, 4000.0, distToCam);
           float peaks = 0.12;
           if (distToCam < 5800.0) {
-              peaks = mix(0.12, ridgedFBM(p * 4.0), peakFade);
+              peaks = mix(0.12, ridgedFBM(seededP * 4.0 + domainWarp), peakFade);
               if (distToCam < 4000.0) {
-                  peaks = mix(peaks, ridgedFBM(p * 4.0) * 0.6 + ridgedFBM(p * 8.0) * 0.4, smoothstep(4000.0, 1500.0, distToCam));
+                  float ridgeChains = ridgedFBM(seededP * 4.0 + domainWarp) * 0.62 +
+                    ridgedFBM(seededP * 8.2 + warp) * 0.38;
+                  peaks = mix(peaks, ridgeChains, smoothstep(4000.0, 1500.0, distToCam));
               }
           }
-          tectonicElevation += mountainMask * peaks * 0.4;
+          // Rounded tablelands interrupt the ridges and keep the geography alien.
+          float plateau = smoothstep(0.38, 0.68, terrainFbm(seededP * 1.8 + 3.6));
+          float tableland = smoothstep(0.42, 0.78, plateau) * (1.0 - smoothstep(0.80, 0.98, plateau));
+          tectonicElevation += mountainMask * mix(peaks * 0.4, 0.13 + peaks * 0.11, tableland);
       } else if (faultType < 0.1) {
-          // Divergent: Rift Valley (Only 10% of faults)
-          float canyonMask = faultLine * smoothstep(0.2, 0.8, fbm(p * 3.0));
-          tectonicElevation -= canyonMask * 0.25;
+          // Divergent boundaries produce narrow, branching rifts and canyons.
+          float canyonNoise = terrainFbm(seededP * 3.0 + domainWarp * 1.4);
+          float canyonMask = exp(-boundaryDist * 24.0) * smoothstep(-0.35, 0.25, canyonNoise);
+          tectonicElevation -= canyonMask * 0.28;
       }
   }
   
@@ -225,7 +264,7 @@ float getElevation(vec3 p, float distToCam) {
   }
   
   // Combine Macro & Regional
-  float elevation = baseTerrain * 0.35 + 0.4; // Base height mapping
+  float elevation = baseTerrain * 0.35 + 0.4;
   elevation += tectonicElevation;
   elevation += basins * 0.25;
   

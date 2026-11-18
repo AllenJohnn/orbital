@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { PlanetVisual } from '~/types/atlas'
 import type { RenderQualityTier } from '~/config/celestialRender'
 import { CELESTIAL_RENDER_CONFIG } from '~/config/celestialRender'
+import { PLANET_SURFACE_CONFIG } from '~/config/planetSurface'
 import {
   planetVertexShader,
   planetFragmentShader,
@@ -14,9 +15,9 @@ import {
 
 export const defaultKepler186fVisual: PlanetVisual = {
   palette: ['#1a1714', '#998059', '#732e1a'],
-  oceanLevel: 0.55,
-  cloudCover: 0.55,
-  iceAmount: 0.35,
+  oceanLevel: PLANET_SURFACE_CONFIG.oceanLevel,
+  cloudCover: PLANET_SURFACE_CONFIG.cloudCover,
+  iceAmount: PLANET_SURFACE_CONFIG.iceAmount,
   atmosphereColor: '#6a9dff',
   atmosphereThickness: 1,
   cityLights: false,
@@ -36,6 +37,11 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
   scene.add(planetGroup)
 
   const radius = CELESTIAL_RENDER_CONFIG.atmosphere.planetRadius
+  const surfaceQualityDefines = (tier: RenderQualityTier) => ({
+    TERRAIN_OCTAVES: tier === 'low' ? 3 : tier === 'medium' ? 4 : 5,
+    ...(tier === 'low' ? { PLANET_LOW_QUALITY: 1, PLANET_NO_CLOUD_SHADOWS: 1 } : {}),
+    ...(tier === 'high' ? { PLANET_HIGH_QUALITY: 1 } : {})
+  })
   const widthSegments = 128
   const heightSegments = 128
   const sunDirection = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
@@ -153,15 +159,25 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
         uPalette1: { value: new THREE.Color(visual.palette[0]) },
         uPalette2: { value: new THREE.Color(visual.palette[1]) },
         uPalette3: { value: new THREE.Color(visual.palette[2]) },
-        uOceanLevel: { value: visual.oceanLevel },
+        uOceanLevel: { value: visual.oceanLevel ?? PLANET_SURFACE_CONFIG.oceanLevel },
         uIceAmount: { value: visual.iceAmount },
         uAtmosphereColor: { value: new THREE.Color(visual.atmosphereColor) },
         uAtmosphereThickness: { value: visual.atmosphereThickness },
         uStarColor: { value: new THREE.Color(starColor) },
         uRayleighCoefficients: { value: new THREE.Vector3(...CELESTIAL_RENDER_CONFIG.atmosphere.rayleighCoefficients) },
         uMieCoefficients: { value: new THREE.Vector3(...CELESTIAL_RENDER_CONFIG.atmosphere.mieCoefficients) },
-        uAtmosphereHeight: { value: CELESTIAL_RENDER_CONFIG.atmosphere.height }
-      }
+        uAtmosphereHeight: { value: CELESTIAL_RENDER_CONFIG.atmosphere.height },
+        uTerrainSeed: { value: PLANET_SURFACE_CONFIG.seed },
+        uReliefStrength: { value: PLANET_SURFACE_CONFIG.reliefStrength },
+        uOceanDeepColor: { value: new THREE.Color(PLANET_SURFACE_CONFIG.oceanColors.deep) },
+        uOceanShallowColor: { value: new THREE.Color(PLANET_SURFACE_CONFIG.oceanColors.shallow) },
+        uOceanShelfColor: { value: new THREE.Color(PLANET_SURFACE_CONFIG.oceanColors.shelf) },
+        uFoamColor: { value: new THREE.Color(PLANET_SURFACE_CONFIG.oceanColors.foam) },
+        uFoamStrength: { value: PLANET_SURFACE_CONFIG.foamStrength },
+        uGlintStrength: { value: PLANET_SURFACE_CONFIG.glintStrength },
+        uCloudShadowStrength: { value: PLANET_SURFACE_CONFIG.cloudShadowStrength.medium }
+      },
+      defines: surfaceQualityDefines('medium')
     })
     surfaceMesh = new THREE.Mesh(surfaceGeometry, surfaceMaterial)
 
@@ -268,6 +284,13 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
 
   const setRenderQuality = (tier: RenderQualityTier, prefersReducedMotion = false) => {
     reducedMotion = prefersReducedMotion
+    if (surfaceMaterial) {
+      surfaceMaterial.defines = surfaceQualityDefines(tier)
+      surfaceMaterial.needsUpdate = true
+      if (surfaceMaterial.uniforms.uCloudShadowStrength) {
+        surfaceMaterial.uniforms.uCloudShadowStrength.value = PLANET_SURFACE_CONFIG.cloudShadowStrength[tier]
+      }
+    }
     if (!atmosphereMaterial) return
 
     const nextDefines = tier === 'low'
