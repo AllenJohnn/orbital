@@ -37,6 +37,7 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
   scene.add(planetGroup)
 
   const radius = CELESTIAL_RENDER_CONFIG.atmosphere.planetRadius
+  const atmosphereShellRadius = radius + CELESTIAL_RENDER_CONFIG.atmosphere.height * 0.82
   const surfaceQualityDefines = (tier: RenderQualityTier) => ({
     TERRAIN_OCTAVES: tier === 'low' ? 3 : tier === 'medium' ? 4 : 5,
     ...(tier === 'low' ? { PLANET_LOW_QUALITY: 1, PLANET_NO_CLOUD_SHADOWS: 1 } : {}),
@@ -200,8 +201,7 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
 
     // 2. Atmosphere
     if (visual.atmosphereThickness > 0.001) {
-      const atmosphereRadius = radius + CELESTIAL_RENDER_CONFIG.atmosphere.height
-      atmosphereGeometry = new THREE.SphereGeometry(atmosphereRadius, widthSegments, heightSegments)
+      atmosphereGeometry = new THREE.SphereGeometry(atmosphereShellRadius, widthSegments, heightSegments)
       atmosphereMaterial = new THREE.ShaderMaterial({
         vertexShader: atmosphereVertexShader,
         fragmentShader: atmosphereFragmentShader,
@@ -333,8 +333,7 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
 
   const setAtmosphereCameraRadius = (cameraRadius: number) => {
     if (!atmosphereMaterial) return
-    const outerRadius = radius + CELESTIAL_RENDER_CONFIG.atmosphere.height
-    const side = cameraRadius < outerRadius ? THREE.BackSide : THREE.FrontSide
+    const side = cameraRadius < atmosphereShellRadius ? THREE.BackSide : THREE.FrontSide
     if (atmosphereMaterial.side !== side) {
       atmosphereMaterial.side = side
       atmosphereMaterial.needsUpdate = true
