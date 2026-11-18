@@ -20,6 +20,7 @@ import { getSystem } from '~/data/systems'
 import { TIMELINE } from '~/config/timeline'
 import { POST_PROCESSING_CONFIG } from '~/config/postprocessing'
 import { CELESTIAL_RENDER_CONFIG, type RenderQualityTier } from '~/config/celestialRender'
+import { SURFACE_APPROACH_CONFIG } from '~/config/surfaceApproach'
 import { milkyWayFragmentShader, milkyWayVertexShader, solarFragmentShader, solarVertexShader } from '~/shaders/spaceShaders'
 
 const kepler186System = getSystem('kepler-186')!
@@ -77,6 +78,10 @@ export const useOrbitalScene = (
   const cameraForward = new THREE.Vector3()
   const sunScreen = new THREE.Vector3()
   const glarePosition = new THREE.Vector3()
+  const surfaceRayOrigin = new THREE.Vector3()
+  const surfaceRayDirection = new THREE.Vector3()
+  const surfacePoint = new THREE.Vector3()
+  const radialFallback = new THREE.Vector3()
   const planetScreenCenter = new THREE.Vector3()
   const glareOcclusionUniforms = {
     center: { value: new THREE.Vector2() },
@@ -778,6 +783,16 @@ export const useOrbitalScene = (
     lookHorizon.copy(finalPos).addScaledVector(forward, 1000).addScaledVector(up, -80)
     finalLookAt.set(0, 0, 0).lerp(lookHorizon, Math.pow(surfaceApproachProgress, 4.0) * 0.95)
     camera.lookAt(finalLookAt)
+    const surfaceAltitude = Math.max(0, camera.position.length() - CELESTIAL_RENDER_CONFIG.atmosphere.planetRadius)
+    if (!reducedMotion && p <= SYSTEM_REVEAL_AT && surfaceAltitude < SURFACE_APPROACH_CONFIG.activationAltitude) {
+      camera.getWorldDirection(cameraForward)
+      right.setFromMatrixColumn(camera.matrixWorld, 0)
+      up.setFromMatrixColumn(camera.matrixWorld, 1)
+      const approachEnvelope = 1 - THREE.MathUtils.smoothstep(0, SURFACE_APPROACH_CONFIG.activationAltitude, surfaceAltitude)
+      const driftTime = time * SURFACE_APPROACH_CONFIG.camera.driftRate
+      camera.position.addScaledVector(right, Math.sin(driftTime) * SURFACE_APPROACH_CONFIG.camera.drift * approachEnvelope)
+      camera.position.addScaledVector(up, Math.cos(driftTime * 0.73) * SURFACE_APPROACH_CONFIG.camera.drift * 0.48 * approachEnvelope)
+    }
     if (p <= SYSTEM_REVEAL_AT) {
       camera.rotation.z += THREE.MathUtils.lerp(0, 0.05, easeProgress)
     } else {
@@ -798,7 +813,10 @@ export const useOrbitalScene = (
     const baseFov = p <= SYSTEM_REVEAL_AT
       ? THREE.MathUtils.lerp(45, 80, easeProgress)
       : THREE.MathUtils.lerp(80, 52, systemEase)
-    const nextFov = isWarping ? baseFov + warpFactor * 26 : baseFov
+    const fovSettle = !reducedMotion && p <= SYSTEM_REVEAL_AT
+      ? SURFACE_APPROACH_CONFIG.camera.fovSettle * THREE.MathUtils.smoothstep(SURFACE_APPROACH_CONFIG.camera.fovSettleAltitude, SURFACE_APPROACH_CONFIG.fullDetailAltitude, surfaceAltitude)
+      : 0
+    const nextFov = (isWarping ? baseFov + warpFactor * 26 : baseFov) - fovSettle
 
     if (Math.abs(camera.fov - nextFov) > 0.1) {
       camera.fov = nextFov
@@ -868,6 +886,29 @@ export const useOrbitalScene = (
       planetController.planetGroup.rotation.y = THREE.MathUtils.lerp(0, Math.PI / 6, easeProgress)
       planetController.planetGroup.rotation.x = THREE.MathUtils.lerp(0, -Math.PI / 24, easeProgress)
       planetController.update(reducedMotion ? 0 : time, journeyProgress, alignmentEnvelope)
+      const approachFade = (1 - THREE.MathUtils.smoothstep(surfaceAltitude, SURFACE_APPROACH_CONFIG.fullDetailAltitude, SURFACE_APPROACH_CONFIG.activationAltitude)) *
+        (1 - THREE.MathUtils.smoothstep(p, SURFACE_APPROACH_CONFIG.retreatStartProgress, SYSTEM_REVEAL_AT))
+      camera.getWorldDirection(surfaceRayDirection)
+      surfaceRayOrigin.copy(camera.position)
+      const rayProjectionToCenter = surfaceRayOrigin.dot(surfaceRayDirection)
+      let surfaceDiscriminant = rayProjectionToCenter * rayProjectionToCenter -
+        (surfaceRayOrigin.lengthSq() - CELESTIAL_RENDER_CONFIG.atmosphere.planetRadius ** 2)
+      if (surfaceDiscriminant >= 0) {
+        const hitDistance = -rayProjectionToCenter - Math.sqrt(surfaceDiscriminant)
+        if (hitDistance > 0) surfacePoint.copy(surfaceRayOrigin).addScaledVector(surfaceRayDirection, hitDistance)
+        else surfaceDiscriminant = -1
+      }
+      if (surfaceDiscriminant < 0) {
+        radialFallback.copy(camera.position).normalize()
+        surfacePoint.copy(radialFallback).multiplyScalar(CELESTIAL_RENDER_CONFIG.atmosphere.planetRadius)
+      }
+      planetController.updateApproach(
+        surfacePoint,
+        surfaceAltitude,
+        approachFade,
+        reducedMotion ? 0 : time,
+        pixelRatio
+      )
     }
 
     if (systemMapGroup) {
