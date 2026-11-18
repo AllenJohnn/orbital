@@ -58,11 +58,15 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
   let cloudGroup: THREE.Group | null = null
   const cloudGeometries: THREE.BufferGeometry[] = []
   let cloudMaterial: THREE.ShaderMaterial | null = null
+  let cloudMaterialSecondary: THREE.ShaderMaterial | null = null
 
   let moonPivot: THREE.Group | null = null
   let moonGeometry: THREE.SphereGeometry | null = null
   let moonMaterial: THREE.ShaderMaterial | null = null
   let moonMesh: THREE.Mesh | null = null
+  const eclipseDirection = new THREE.Vector3(0, 1, 0)
+  const moonWorldPosition = new THREE.Vector3()
+  const planetWorldPosition = new THREE.Vector3()
 
   let currentVisual: PlanetVisual = initialVisual ?? defaultKepler186fVisual
   let effectsVisible = false
@@ -117,6 +121,10 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
       cloudMaterial.dispose()
       cloudMaterial = null
     }
+    if (cloudMaterialSecondary) {
+      cloudMaterialSecondary.dispose()
+      cloudMaterialSecondary = null
+    }
 
     // 4. Moon
     if (moonMesh) {
@@ -159,8 +167,8 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
         uPalette1: { value: new THREE.Color(visual.palette[0]) },
         uPalette2: { value: new THREE.Color(visual.palette[1]) },
         uPalette3: { value: new THREE.Color(visual.palette[2]) },
-        uOceanLevel: { value: visual.oceanLevel ?? PLANET_SURFACE_CONFIG.oceanLevel },
-        uIceAmount: { value: visual.iceAmount },
+        uOceanLevel: { value: PLANET_SURFACE_CONFIG.oceanLevel },
+        uIceAmount: { value: PLANET_SURFACE_CONFIG.iceAmount },
         uAtmosphereColor: { value: new THREE.Color(visual.atmosphereColor) },
         uAtmosphereThickness: { value: visual.atmosphereThickness },
         uStarColor: { value: new THREE.Color(starColor) },
@@ -175,7 +183,9 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
         uFoamColor: { value: new THREE.Color(PLANET_SURFACE_CONFIG.oceanColors.foam) },
         uFoamStrength: { value: PLANET_SURFACE_CONFIG.foamStrength },
         uGlintStrength: { value: PLANET_SURFACE_CONFIG.glintStrength },
-        uCloudShadowStrength: { value: PLANET_SURFACE_CONFIG.cloudShadowStrength.medium }
+        uCloudShadowStrength: { value: PLANET_SURFACE_CONFIG.cloudShadowStrength.medium },
+        uMoonDirection: { value: eclipseDirection },
+        uEclipseStrength: { value: 0 }
       },
       defines: surfaceQualityDefines('medium')
     })
@@ -237,18 +247,25 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
         uniforms: {
           uTime: { value: 0 },
           uSunDirection: { value: sunDirection },
-          uCloudCover: { value: visual.cloudCover }
+          uCloudCover: { value: PLANET_SURFACE_CONFIG.cloudCover },
+          uTerrainSeed: { value: PLANET_SURFACE_CONFIG.seed },
+          uCloudLayer: { value: 0 }
         },
+        defines: { CLOUD_OCTAVES: 3 },
         transparent: true,
         depthWrite: false,
         side: THREE.DoubleSide
       })
+      cloudMaterialSecondary = cloudMaterial.clone()
+      if (cloudMaterialSecondary.uniforms.uCloudLayer) {
+        cloudMaterialSecondary.uniforms.uCloudLayer.value = 1
+      }
 
-      // One detailed shell avoids stacking the same cloud map three times,
-      // which softened the formations and increased transparent overdraw.
-      const cloudGeometry = new THREE.SphereGeometry(radius * 1.02, widthSegments, heightSegments)
-      cloudGeometries.push(cloudGeometry)
-      cloudGroup.add(new THREE.Mesh(cloudGeometry, cloudMaterial))
+      const lowerCloudGeometry = new THREE.SphereGeometry(radius * 1.02, widthSegments, heightSegments)
+      const upperCloudGeometry = new THREE.SphereGeometry(radius * 1.02 + PLANET_SURFACE_CONFIG.cloudLayerSeparation, widthSegments, heightSegments)
+      cloudGeometries.push(lowerCloudGeometry, upperCloudGeometry)
+      cloudGroup.add(new THREE.Mesh(lowerCloudGeometry, cloudMaterial))
+      cloudGroup.add(new THREE.Mesh(upperCloudGeometry, cloudMaterialSecondary))
 
       planetRotationGroup.add(cloudGroup)
     }
@@ -262,7 +279,8 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
         fragmentShader: moonFragmentShader,
         uniforms: {
           uTime: { value: 0 },
-          uSunDirection: { value: sunDirection }
+          uSunDirection: { value: sunDirection },
+          uMoonReliefStrength: { value: PLANET_SURFACE_CONFIG.moonReliefStrength }
         }
       })
       moonMesh = new THREE.Mesh(moonGeometry, moonMaterial)
@@ -290,6 +308,14 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
       if (surfaceMaterial.uniforms.uCloudShadowStrength) {
         surfaceMaterial.uniforms.uCloudShadowStrength.value = PLANET_SURFACE_CONFIG.cloudShadowStrength[tier]
       }
+    }
+    for (const material of [cloudMaterial, cloudMaterialSecondary]) {
+      if (!material) continue
+      material.defines = {
+        CLOUD_OCTAVES: tier === 'low' ? 2 : tier === 'medium' ? 3 : 5,
+        ...(tier === 'high' ? { CLOUD_HIGH_QUALITY: 1 } : {})
+      }
+      material.needsUpdate = true
     }
     if (!atmosphereMaterial) return
 
@@ -341,16 +367,28 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, star
     if (moonPivot) {
       moonPivot.rotation.y = time * 0.015
     }
+    if (moonMesh && surfaceMaterial?.uniforms?.uEclipseStrength) {
+      planetGroup.updateMatrixWorld(true)
+      moonMesh.getWorldPosition(moonWorldPosition)
+      planetGroup.getWorldPosition(planetWorldPosition)
+      eclipseDirection.copy(moonWorldPosition).sub(planetWorldPosition).normalize()
+      const starAlignment = eclipseDirection.dot(sunDirection)
+      surfaceMaterial.uniforms.uMoonDirection?.value.copy(eclipseDirection)
+      surfaceMaterial.uniforms.uEclipseStrength.value = THREE.MathUtils.smoothstep(starAlignment, 0.985, 0.999)
+    }
 
     // Shader uniforms
     if (surfaceMaterial?.uniforms?.uTime) {
-      surfaceMaterial.uniforms.uTime.value = time * 0.5
+      surfaceMaterial.uniforms.uTime.value = reducedMotion ? 0 : time * 0.5
     }
     if (cloudMaterial?.uniforms?.uTime) {
-      cloudMaterial.uniforms.uTime.value = time
+      cloudMaterial.uniforms.uTime.value = reducedMotion ? 0 : time
+    }
+    if (cloudMaterialSecondary?.uniforms?.uTime) {
+      cloudMaterialSecondary.uniforms.uTime.value = reducedMotion ? 0 : time
     }
     if (moonMaterial?.uniforms?.uTime) {
-      moonMaterial.uniforms.uTime.value = time * 1.5
+      moonMaterial.uniforms.uTime.value = reducedMotion ? 0 : time * 1.5
     }
   }
 

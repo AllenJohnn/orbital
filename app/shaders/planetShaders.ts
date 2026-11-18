@@ -39,6 +39,8 @@ uniform vec3 uFoamColor;
 uniform float uFoamStrength;
 uniform float uGlintStrength;
 uniform float uCloudShadowStrength;
+uniform vec3 uMoonDirection;
+uniform float uEclipseStrength;
 varying vec2 vUv;
 varying vec3 vNormalWorld;
 varying vec3 vNormalLocal;
@@ -114,6 +116,7 @@ float ridgedFBM(vec3 p) {
   float a = 0.5;
   vec3 shift = vec3(100.0);
   for (int i = 0; i < 5; ++i) {
+    if (i >= TERRAIN_OCTAVES) break;
     v += a * ridgedNoise(p);
     p = p * 2.0 + shift;
     a *= 0.5;
@@ -141,7 +144,7 @@ float terrainFbm(vec3 p) {
 
 float getImpactBasin(vec3 p, float scale, float probability, float depthMult) {
     // Warp the input position slightly to make craters asymmetrical and organic
-    vec3 warpedP = p * scale + vec3(fbm(p * scale * 3.0), fbm(p * scale * 3.0 + 1.5), 0.0) * 0.15;
+    vec3 warpedP = p * scale + vec3(terrainFbm(p * scale * 3.0), terrainFbm(p * scale * 3.0 + 1.5), 0.0) * 0.15;
     vec4 v = voronoiCrater(warpedP);
     float dist = v.x;
     float hash = v.y;
@@ -153,7 +156,7 @@ float getImpactBasin(vec3 p, float scale, float probability, float depthMult) {
         
         if (normalizedDist < 2.5) {
             // Raised Rim with fractured edges (noise)
-            float rimNoise = 1.0 + fbm(p * scale * 8.0) * 0.4;
+            float rimNoise = 1.0 + terrainFbm(p * scale * 8.0) * 0.4;
             float rim = smoothstep(0.6, 1.0, normalizedDist) * smoothstep(1.5 * rimNoise, 1.0, normalizedDist);
             
             // Deep Floor
@@ -164,7 +167,7 @@ float getImpactBasin(vec3 p, float scale, float probability, float depthMult) {
             
             // Radial Ejecta & Secondary impacts (ejecta blanket)
             float angle = atan(v.w, v.z);
-            float rays = max(0.0, sin(angle * 12.0 + fbm(p * scale * 5.0) * 2.0));
+            float rays = max(0.0, sin(angle * 12.0 + terrainFbm(p * scale * 5.0) * 2.0));
             float ejectaBlanket = rays * smoothstep(2.5, 1.0, normalizedDist) * 0.15;
             
             elevation = rim * 0.8 * rimNoise - (1.0 - floor) * depthMult + peak + ejectaBlanket;
@@ -174,6 +177,9 @@ float getImpactBasin(vec3 p, float scale, float probability, float depthMult) {
 }
 
 float getImpactHistory(vec3 p, float distToCam) {
+#ifdef PLANET_LOW_QUALITY
+    return getImpactBasin(p, 1.1, 0.045, 0.75) * 0.32;
+#else
     // 4-Tier Hierarchy: Mega, Large, Medium, Small
     float basins = getImpactBasin(p, 1.2, 0.08, 1.5);    // Mega basins (very rare, huge impact, deep)
     
@@ -195,6 +201,7 @@ float getImpactHistory(vec3 p, float distToCam) {
         basins += getImpactBasin(p, 20.0, 0.35, 0.3) * 0.1 * fade;
     }
     return basins;
+#endif
 }
 
 // Master Elevation Function (Distance-Aware LOD)
@@ -338,58 +345,74 @@ void main() {
   float surfaceGrain = snoise(localNormal * 46.0 + vec3(12.3));
   float strataGrain = snoise(localNormal * 17.0 + vec3(2.8));
   
-  // --------------------------------------------------------
-  // GEOLOGICAL BUMP MAPPING (Normal Perturbation)
-  // --------------------------------------------------------
+  // Estimate relief normals from the same height field used for terrain and
+  // waves. Screen-space derivatives avoid evaluating the expensive map twice.
   vec3 worldNormal = normalize(vNormalWorld);
-  vec3 finalNormal = worldNormal;
-
-  // A restrained bump response keeps the fully compiled opening view from
-  // reading as a flat color sphere, then gains strength during the approach.
-  if (distToCam < 6200.0) {
-    // Dynamic EPS captures fine detail close up while avoiding noisy distant normals.
-    float eps = mix(0.00005, 0.015, smoothstep(5.0, 2000.0, distToCam));
-
-    vec3 wt1 = normalize(cross(worldNormal, vec3(0.0, 1.0, 0.0)));
-    if (length(wt1) < 0.1) wt1 = normalize(cross(worldNormal, vec3(1.0, 0.0, 0.0)));
-    vec3 wt2 = normalize(cross(worldNormal, wt1));
-
-    vec3 lt1 = normalize(cross(localNormal, vec3(0.0, 1.0, 0.0)));
-    if (length(lt1) < 0.1) lt1 = normalize(cross(localNormal, vec3(1.0, 0.0, 0.0)));
-    vec3 lt2 = normalize(cross(localNormal, lt1));
-
-    vec3 sample1 = normalize(localNormal + lt1 * eps);
-    vec3 sample2 = normalize(localNormal + lt2 * eps);
-    float e1 = getSurfaceElevationFromTerrain(sample1, getElevation(sample1, distToCam), distToCam);
-    float e2 = getSurfaceElevationFromTerrain(sample2, getElevation(sample2, distToCam), distToCam);
-
-    float bumpStrength = mix(8.0, 0.75, smoothstep(50.0, 5000.0, distToCam));
-    finalNormal = normalize(worldNormal - wt1 * (e1 - surfaceElevation) / eps * bumpStrength
-                                         - wt2 * (e2 - surfaceElevation) / eps * bumpStrength);
-  }
+  float detailDistanceFade = 1.0 - smoothstep(1800.0, 4200.0, distToCam);
+  float fineDistanceFade = 1.0 - smoothstep(260.0, 950.0, distToCam);
+  float fineHeight = snoise(localNormal * 84.0 + vec3(uTerrainSeed * 0.07)) *
+    0.0016 * fineDistanceFade;
+  float detailHeight = terrainFbm(localNormal * 22.0 + vec3(uTerrainSeed * 0.03)) *
+    0.007 * detailDistanceFade;
+  float reliefHeight = (surfaceElevation - uOceanLevel) * uReliefStrength +
+    detailHeight + fineHeight;
+  vec3 reliefPosition = vPositionWorld + worldNormal * reliefHeight;
+  vec3 reliefDx = dFdx(reliefPosition);
+  vec3 reliefDy = dFdy(reliefPosition);
+  vec3 derivedNormal = normalize(cross(reliefDx, reliefDy));
+  if (dot(derivedNormal, worldNormal) < 0.0) derivedNormal = -derivedNormal;
+  float reliefFade = 1.0 - smoothstep(6500.0, 10000.0, distToCam);
+  float terminatorBoost = 1.0 + 0.22 * exp(-pow(dot(worldNormal, sunDir) / 0.24, 2.0));
+  vec3 finalNormal = normalize(mix(worldNormal, derivedNormal, clamp(reliefFade * terminatorBoost, 0.0, 1.0)));
 
   // --------------------------------------------------------
   // MACRO BIOME DISTRIBUTION (The Planetary DNA)
   // --------------------------------------------------------
   // Optimized warp (1 FBM call instead of 2)
-  float globalWarp = fbm(localNormal * 0.6);
+  float globalWarp = terrainFbm(localNormal * 0.6 + vec3(uTerrainSeed * 0.01));
   vec3 biomeWarp = vec3(globalWarp, globalWarp * 1.2, 0.0);
   
   // MARS: Iron/Arid World
-  float mineralMask = smoothstep(0.2, 0.7, snoise(localNormal * 0.8 + biomeWarp + vec3(14.5)));
+  float mineralMask = smoothstep(0.2, 0.7, terrainFbm(localNormal * 0.8 + biomeWarp + vec3(14.5)));
   // SATURN: Pale Golden Geology
-  float goldenMask = smoothstep(0.3, 0.8, snoise(localNormal * 0.9 - biomeWarp + vec3(5.5)));
+  float goldenMask = smoothstep(0.3, 0.8, terrainFbm(localNormal * 0.9 - biomeWarp + vec3(5.5)));
+  float moisture = terrainFbm(localNormal * 1.65 + vec3(6.8, 4.2, -2.1));
+  float latitude = abs(localNormal.y);
   // ICE CAPS (Use simple snoise instead of FBM to save instructions)
   float iceThreshold = 1.0 - uIceAmount;
   float coldMask = uIceAmount > 0.001
-    ? smoothstep(iceThreshold, iceThreshold + 0.3, abs(localNormal.y) + snoise(localNormal * 3.0) * 0.15)
+    ? smoothstep(iceThreshold, iceThreshold + 0.3, latitude + terrainFbm(localNormal * 3.0) * 0.15)
     : 0.0;
   
   float seaLevel = uOceanLevel;
   vec3 albedo = vec3(0.0);
   float isLand = 0.0;
+  float isIce = 0.0;
   float specular = 0.0;
   float diffuse = max(dot(finalNormal, sunDir), 0.0);
+  float moonShadow = smoothstep(0.996, 0.999, dot(worldNormal, normalize(uMoonDirection))) * uEclipseStrength;
+  diffuse *= 1.0 - moonShadow * 0.92;
+
+#ifndef PLANET_NO_CLOUD_SHADOWS
+  vec3 cloudDrift = vec3(uTime * 0.0018, -uTime * 0.0012, uTime * 0.0015);
+  vec3 cloudSeed = vec3(uTerrainSeed * 0.01, -uTerrainSeed * 0.017, uTerrainSeed * 0.007);
+  vec3 cloudWarp = vec3(
+    terrainFbm(localNormal * 2.1 + cloudDrift + cloudSeed),
+    terrainFbm(localNormal * 2.1 - cloudDrift + vec3(4.2) + cloudSeed),
+    terrainFbm(localNormal * 2.1 + vec3(8.1, 2.3, -3.7) + cloudSeed)
+  );
+  vec3 cloudNoisePos = localNormal * 3.8 + cloudWarp * 0.72 + cloudDrift + cloudSeed;
+  float cloudShadowField = terrainFbm(cloudNoisePos) * 0.66 +
+    terrainFbm(cloudNoisePos * 3.2 + vec3(1.2, -0.5, 2.1)) * 0.25 +
+    snoise(cloudNoisePos * 13.0 + vec3(5.3)) * 0.065;
+#ifdef PLANET_HIGH_QUALITY
+  vec3 upperDrift = cloudDrift * 0.38;
+  vec3 upperNoisePos = localNormal * 5.2 + cloudWarp * 0.72 + upperDrift + cloudSeed;
+  cloudShadowField = cloudShadowField * 0.68 + terrainFbm(upperNoisePos) * 0.32;
+#endif
+  float cloudShadow = smoothstep(0.22, 0.58, cloudShadowField) * uCloudShadowStrength;
+  diffuse *= 1.0 - cloudShadow * (0.5 + 0.5 * smoothstep(-0.18, 0.4, dot(finalNormal, sunDir)));
+#endif
   
   if (uOceanLevel > 0.001 && texturedElevation < seaLevel) {
     // --------------------------------------------------------
@@ -399,9 +422,9 @@ void main() {
     float shoreLine = smoothstep(seaLevel - 0.035, seaLevel + 0.006, texturedElevation); // 0 in deep, 1 at shore
     
     // Darker, more cinematic alien ocean colors
-    vec3 waterDeep = vec3(0.002, 0.015, 0.04);
-    vec3 waterShallow = vec3(0.01, 0.08, 0.12);
-    vec3 waterCoastal = vec3(0.08, 0.22, 0.28); // Sediment/turquoise transition
+    vec3 waterDeep = uOceanDeepColor;
+    vec3 waterShallow = uOceanShallowColor;
+    vec3 waterCoastal = uOceanShelfColor;
     
     // Massive atmospheric/chemical bands in the deep ocean
     float currentBands = sin((localNormal.x * 1.1 + localNormal.z * 0.7 + shorelineGrain * 0.12) * 34.0 + uTime * 0.012);
@@ -409,6 +432,10 @@ void main() {
     
     vec3 waterBase = mix(waterDeep, waterShallow, depth);
     albedo = mix(waterBase, waterCoastal, shoreLine);
+    float foamNoise = terrainFbm(localNormal * 82.0 + vec3(uTime * 0.002, 1.4, -uTime * 0.001));
+    float shorelineFoam = smoothstep(0.48, 0.76, foamNoise + shoreLine * 0.72) *
+      (1.0 - smoothstep(0.82, 0.99, texturedElevation));
+    albedo = mix(albedo, uFoamColor, shorelineFoam * uFoamStrength * 0.62);
     
     // Fresnel response (Water reflects the sky at grazing angles)
     float waterFresnel = max(1.0 - dot(finalNormal, viewDir), 0.0);
@@ -420,9 +447,10 @@ void main() {
     vec3 halfVector = normalize(sunDir + viewDir);
     float specAngle = max(dot(finalNormal, halfVector), 0.0);
     // Dynamic roughness based on depth (coastlines are rougher/frothy, deep ocean is smoother)
-    float specPower = mix(170.0, 52.0, depth);
-    float waveRoughness = 0.88 + surfaceGrain * 0.12;
-    float sunGlint = pow(specAngle, 170.0) * 0.45;
+    float wind = snoise(localNormal * 2.8 + vec3(uTime * 0.004, 4.7, -2.1));
+    float waveRoughness = clamp(0.84 + wind * 0.13 + surfaceGrain * 0.08, 0.55, 1.0);
+    float specPower = mix(188.0, 62.0, depth) * waveRoughness;
+    float sunGlint = pow(specAngle, 170.0) * uGlintStrength;
     specular = pow(specAngle, specPower) * mix(1.45, 0.68, depth) * waveRoughness + sunGlint;
   } else {
     // --------------------------------------------------------
@@ -430,6 +458,8 @@ void main() {
     // --------------------------------------------------------
     isLand = 1.0;
     float h = smoothstep(seaLevel, 1.0, texturedElevation);
+    float dustMask = (1.0 - smoothstep(-0.1, 0.55, moisture)) *
+      (1.0 - smoothstep(0.42, 0.74, texturedElevation)) * (1.0 - latitude * 0.36);
     
     // Biome 1: Mars (Iron / Rust / Basalt)
     vec3 marsLow = uPalette3;
@@ -457,6 +487,8 @@ void main() {
     
     albedo = mix(albedo, marsCol, mineralMask); // Mars overrides Gold
     landSpec = mix(landSpec, 0.01, mineralMask); // Iron desert is very matte
+    vec3 dustPlains = mix(uPalette1 * vec3(1.25, 1.12, 0.94), uPalette2 * vec3(0.72, 0.61, 0.48), h);
+    albedo = mix(albedo, dustPlains, dustMask * (1.0 - mineralMask * 0.55));
     
     // Coastal sand/sediment
     vec3 coastLine = mix(vec3(0.25, 0.22, 0.18), vec3(0.1, 0.05, 0.02), mineralMask);
@@ -465,11 +497,14 @@ void main() {
     landSpec = mix(landSpec, 0.1, isCoast); // Wet sand is slightly specular
     
     // Polar Ice
-    vec3 ice = vec3(0.82, 0.88, 0.95);
+    vec3 ice = vec3(0.72, 0.82, 0.92);
     float polarIce = coldMask * (uOceanLevel > 0.001 ? smoothstep(seaLevel + 0.02, seaLevel + 0.2, texturedElevation) : 1.0);
-    float highlandSnow = smoothstep(0.78, 0.96, texturedElevation) * (1.0 - mineralMask * 0.6);
-    float isIce = max(polarIce, highlandSnow * 0.72);
-    albedo = mix(albedo, ice, isIce);
+    float snowLine = 0.77 - latitude * 0.14;
+    float highlandSnow = smoothstep(snowLine, snowLine + 0.16, texturedElevation) * (1.0 - mineralMask * 0.6);
+    isIce = max(polarIce, highlandSnow * 0.72);
+    float iceCracks = 1.0 - smoothstep(0.91, 0.985, abs(terrainFbm(localNormal * 46.0 + vec3(8.2, -3.1, 5.7))));
+    vec3 crackedIce = mix(ice, ice * vec3(0.46, 0.62, 0.79), iceCracks * 0.28);
+    albedo = mix(albedo, crackedIce, isIce);
     landSpec = mix(landSpec, 0.8, isIce); // Ice is highly reflective
 
     // Fine mineral grain and exposed strata give plains and uplands distinct texture.
@@ -489,29 +524,41 @@ void main() {
   // --------------------------------------------------------
   // LIGHTING & ATMOSPHERIC SCATTERING ON SURFACE
   // --------------------------------------------------------
-  // Base diffuse and ambient
-  vec3 ambient = albedo * 0.02; // Very subtle base ambient
-  vec3 finalColor = albedo * diffuse * 1.5 + vec3(specular) + ambient;
+  // Oren-Nayar-inspired diffuse keeps rough dust and rock legible at grazing
+  // angles without flattening the dark basin palette.
+  float sigma = mix(0.22, 0.62, isLand * (1.0 - isIce));
+  float sigma2 = sigma * sigma;
+  float orenA = 1.0 - 0.5 * sigma2 / (sigma2 + 0.33);
+  float orenB = 0.45 * sigma2 / (sigma2 + 0.09);
+  float ndotv = max(dot(finalNormal, viewDir), 0.0);
+  float sinAlpha = sqrt(max(1.0 - min(diffuse, ndotv) * min(diffuse, ndotv), 0.0));
+  float tanBeta = sqrt(max(1.0 - max(diffuse, ndotv) * max(diffuse, ndotv), 0.0)) /
+    max(max(diffuse, ndotv), 0.08);
+  float orenDiffuse = diffuse * (orenA + orenB * sinAlpha * tanBeta);
+  vec3 ambient = albedo * 0.018;
+  vec3 finalColor = albedo * orenDiffuse * 1.48 + vec3(specular) + ambient;
   
   // Carry a little volume inscatter onto the terrain silhouette so the opaque
   // surface and transparent atmosphere meet without a hard edge.
   float viewFacing = max(dot(normalize(worldNormal), normalize(viewDir)), 0.0);
   float limbPath = pow(1.0 - viewFacing, 3.2);
-  float terminator = dot(normalize(worldNormal), sunDir);
+  float terminator = dot(finalNormal, sunDir);
   float twilightBand = exp(-pow((terminator + 0.015) / 0.2, 2.0));
+  float softTerminator = exp(-pow(terminator / 0.17, 2.0));
   float atmosphereDepth = clamp(uAtmosphereHeight / 32.0, 0.2, 1.5);
   vec3 spectralInscatter = uStarColor * (
     uRayleighCoefficients * 0.18 + uMieCoefficients * 0.42
   );
-  vec3 warmTwilight = uStarColor * vec3(1.0, 0.34, 0.13);
+  vec3 warmTwilight = uStarColor * vec3(1.0, 0.34, 0.16);
   float limbHaze = limbPath * atmosphereDepth * uAtmosphereThickness;
   finalColor *= 1.0 - limbHaze * 0.08;
   finalColor += spectralInscatter * limbHaze * (0.45 + twilightBand * 0.8);
   finalColor += warmTwilight * twilightBand * limbPath * uAtmosphereThickness * 0.12;
+  finalColor += warmTwilight * softTerminator * 0.045;
   
   // Subtle night-side environmental fill (so dark side isn't pure black, preserving terrain readability)
-  vec3 nightAmbient = albedo * vec3(0.04, 0.06, 0.1); 
-  finalColor += nightAmbient * (1.0 - max(terminator, 0.0)) * 0.5;
+  vec3 nightAmbient = albedo * (vec3(0.028, 0.043, 0.071) + uAtmosphereColor * 0.026);
+  finalColor += nightAmbient * (1.0 - smoothstep(-0.12, 0.36, terminator)) * 0.72;
   
   // --------------------------------------------------------
   // ANCIENT CITY LIGHTS (Points of Interest Foundation)
@@ -694,6 +741,8 @@ export const cloudsFragmentShader = `
 uniform vec3 uSunDirection;
 uniform float uTime;
 uniform float uCloudCover;
+uniform float uTerrainSeed;
+uniform float uCloudLayer;
 varying vec2 vUv;
 varying vec3 vNormalWorld;
 varying vec3 vNormalLocal;
@@ -701,36 +750,61 @@ varying vec3 vPositionWorld;
 
 ${snoise3}
 
+float cloudFbm(vec3 p) {
+  float sum = 0.0;
+  float amplitude = 0.5;
+  float total = 0.0;
+  for (int octave = 0; octave < 5; ++octave) {
+    if (octave >= CLOUD_OCTAVES) break;
+    sum += snoise(p) * amplitude;
+    total += amplitude;
+    p = p * 2.02 + vec3(13.4, 7.2, 19.1);
+    amplitude *= 0.5;
+  }
+  return sum / max(total, 0.001);
+}
+
 void main() {
   vec3 normal = normalize(vNormalWorld);
   vec3 localNormal = normalize(vNormalLocal);
   vec3 sunDir = normalize(uSunDirection);
 
-  // A single cloud shell carries broad weather systems, broken edges, and fine wisps.
-  vec3 drift = vec3(uTime * 0.002, -uTime * 0.0013, uTime * 0.0016);
+  float layerRate = mix(1.0, 0.38, uCloudLayer);
+  vec3 drift = vec3(uTime * 0.0018, -uTime * 0.0012, uTime * 0.0015) * layerRate;
+  vec3 seedOffset = vec3(uTerrainSeed * 0.01, -uTerrainSeed * 0.017, uTerrainSeed * 0.007);
   vec3 baseWarp = vec3(
-    fbm(localNormal * 2.1 + drift),
-    fbm(localNormal * 2.1 - drift + vec3(4.2)),
-    fbm(localNormal * 2.1 + vec3(8.1, 2.3, -3.7))
+    cloudFbm(localNormal * 2.1 + drift + seedOffset),
+    cloudFbm(localNormal * 2.1 - drift + vec3(4.2) + seedOffset),
+    cloudFbm(localNormal * 2.1 + vec3(8.1, 2.3, -3.7) + seedOffset)
   );
-  vec3 noisePos = localNormal * 3.8 + baseWarp * 0.72 + drift;
-  float broadBanks = fbm(noisePos);
-  float billowDetail = fbm(noisePos * 3.2 + vec3(1.2, -0.5, 2.1));
+  vec3 noisePos = localNormal * mix(3.8, 5.2, uCloudLayer) + baseWarp * 0.72 + drift + seedOffset;
+  float broadBanks = cloudFbm(noisePos);
+  float billowDetail = cloudFbm(noisePos * 3.2 + vec3(1.2, -0.5, 2.1));
   float wisps = snoise(noisePos * 13.0 + vec3(5.3));
   float erosion = snoise(noisePos * 29.0 - drift * 2.0);
-  float density = broadBanks * 0.64 + billowDetail * 0.27 + wisps * 0.075 + erosion * 0.035;
+
+  // A few fixed storm centers curl the cloud banks into slow, recognizable swirls.
+  vec3 stormA = normalize(vec3(0.22, 0.54, 0.81));
+  vec3 stormB = normalize(vec3(-0.68, -0.18, 0.71));
+  vec3 stormC = normalize(vec3(0.74, -0.48, -0.31));
+  float stormAngleA = atan(dot(localNormal, cross(stormA, vec3(0.0, 1.0, 0.0))), dot(localNormal, stormA));
+  float stormAngleB = atan(dot(localNormal, cross(stormB, vec3(1.0, 0.0, 0.0))), dot(localNormal, stormB));
+  float stormAField = exp(-pow(1.0 - dot(localNormal, stormA), 2.0) * 54.0) *
+    sin(stormAngleA * 5.0 + uTime * 0.008);
+  float stormBField = exp(-pow(1.0 - dot(localNormal, stormB), 2.0) * 48.0) *
+    sin(stormAngleB * 4.0 - uTime * 0.006);
+  float stormCField = exp(-pow(1.0 - dot(localNormal, stormC), 2.0) * 48.0) *
+    sin(dot(localNormal, vec3(19.0, 27.0, -14.0)) + uTime * 0.005);
+  float stormSwirl = stormAField * 0.18 + stormBField * 0.15 + stormCField * 0.12;
+  float density = broadBanks * 0.66 + billowDetail * 0.25 + wisps * 0.065 + erosion * 0.025 + stormSwirl;
 
   float coverageEdge = mix(0.64, 0.08, clamp(uCloudCover, 0.0, 1.0));
   float coverage = smoothstep(coverageEdge - 0.11, coverageEdge + 0.13, density);
   float thickClouds = smoothstep(coverageEdge + 0.08, coverageEdge + 0.34, density);
   
-  // Altitude fade: hide shell boundaries by fading density at the top and bottom of the volume
-  float altitude = length(vPositionWorld) - 400.0; // Cloud layer is roughly 406 to 414
-  // Fade gently across the thin cloud shell to avoid visible sphere edges.
-  float normAlt = clamp((altitude - 6.0) / 8.0, 0.0, 1.0);
-  // Parabola: 0 at edges, 1 in the middle of the volume
-  float altitudeFade = smoothstep(0.0, 0.3, normAlt) * smoothstep(1.0, 0.7, normAlt);
-  
+  float altitude = length(vPositionWorld) - 400.0;
+  float layerAltitude = 8.0 + uCloudLayer * 5.5;
+  float altitudeFade = 1.0 - smoothstep(2.5, 7.0, abs(altitude - layerAltitude));
   coverage *= altitudeFade;
   
   // Lighting
@@ -738,13 +812,13 @@ void main() {
   float terminator = smoothstep(-0.2, 0.2, dot(normal, sunDir));
   
   // Color formulation
-  vec3 cloudLit = vec3(0.9, 0.94, 0.97);
-  vec3 cloudSunset = vec3(1.0, 0.58, 0.36);
-  vec3 cloudDark = vec3(0.035, 0.055, 0.09);
+  vec3 cloudLit = vec3(0.78, 0.82, 0.84);
+  vec3 cloudSunset = vec3(0.82, 0.39, 0.23);
+  vec3 cloudDark = vec3(0.025, 0.038, 0.055);
   vec3 baseColor = mix(cloudSunset, cloudLit, smoothstep(-0.08, 0.46, dot(normal, sunDir)));
   vec3 cloudColor = baseColor * (0.22 + diffuse * 1.06);
   cloudColor = mix(cloudColor, cloudDark, (1.0 - terminator) * 0.72);
-  cloudColor *= 1.0 - thickClouds * 0.2;
+  cloudColor *= 0.84 + thickClouds * 0.28;
 
   // Thin cloud edges catch the star and separate layered forms from the surface.
   vec3 viewDir = normalize(cameraPosition - vPositionWorld);
@@ -756,7 +830,8 @@ void main() {
   float distToCam = length(cameraPosition - vPositionWorld);
   float proximityFade = smoothstep(2.0, 15.0, distToCam);
   
-  float finalAlpha = coverage * 0.72 * proximityFade;
+  float layerOpacity = mix(0.44, 0.31, uCloudLayer);
+  float finalAlpha = coverage * mix(0.28, layerOpacity, thickClouds) * proximityFade;
   
   gl_FragColor = vec4(cloudColor, finalAlpha);
 }
@@ -765,16 +840,53 @@ void main() {
 export const moonFragmentShader = `
 uniform vec3 uSunDirection;
 uniform float uTime;
+uniform float uMoonReliefStrength;
 varying vec2 vUv;
 varying vec3 vNormalWorld;
+varying vec3 vNormalLocal;
+varying vec3 vPositionWorld;
 
 ${snoise3}
 
+float moonHash(vec3 p) {
+  return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+}
+
+float moonCraterHeight(vec3 normal) {
+  vec3 p = normal * 24.0;
+  vec3 cell = floor(p);
+  vec3 local = fract(p);
+  float height = 0.0;
+  float nearestCrater = 10.0;
+  float craterRadius = 0.25;
+  for (int z = -1; z <= 1; ++z)
+  for (int y = -1; y <= 1; ++y)
+  for (int x = -1; x <= 1; ++x) {
+    vec3 offset = vec3(float(x), float(y), float(z));
+    vec3 id = cell + offset;
+    vec3 jitter = vec3(moonHash(id), moonHash(id + 17.0), moonHash(id + 39.0)) * 0.72 + 0.14;
+    float distanceToCrater = length(offset + jitter - local);
+    float radius = mix(0.16, 0.39, moonHash(id + 71.0));
+    if (distanceToCrater < nearestCrater) {
+      nearestCrater = distanceToCrater;
+      craterRadius = radius;
+    }
+  }
+  float radial = nearestCrater / craterRadius;
+  float bowl = smoothstep(0.14, 0.96, radial) * (1.0 - smoothstep(0.94, 1.1, radial));
+  float rim = exp(-pow((radial - 1.0) * 8.0, 2.0));
+  return -bowl * 0.12 + rim * 0.035;
+}
+
 void main() {
-  vec3 normal = normalize(vNormalWorld);
+  vec3 baseNormal = normalize(vNormalWorld);
+  float craterHeight = moonCraterHeight(normalize(vNormalLocal));
+  vec3 reliefPosition = vPositionWorld + baseNormal * craterHeight * uMoonReliefStrength * 50.0;
+  vec3 normal = normalize(cross(dFdx(reliefPosition), dFdy(reliefPosition)));
+  if (dot(normal, baseNormal) < 0.0) normal = -normal;
   vec3 sunDir = normalize(uSunDirection);
 
-  vec3 noisePos = normal * 5.0 + uTime * 0.005;
+  vec3 noisePos = normal * 5.0;
   float noiseVal = fbm(noisePos);
   
   // Crater/barren rock colors
