@@ -107,6 +107,7 @@ const showMoreData = ref(false)
   justify-content: space-between;
   width: 100%;
   min-height: 100vh;
+  min-height: 100svh;
   min-height: 100dvh;
   overflow-y: auto;
   padding: clamp(1.4rem, 4.2vh, 3rem) clamp(1.5rem, 6vw, 7rem);

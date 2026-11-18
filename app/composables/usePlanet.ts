@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import type { PlanetVisual } from '~/types/atlas'
+import type { RenderQualityTier } from '~/config/celestialRender'
+import { CELESTIAL_RENDER_CONFIG } from '~/config/celestialRender'
 import {
   planetVertexShader,
   planetFragmentShader,
@@ -23,7 +25,7 @@ export const defaultKepler186fVisual: PlanetVisual = {
   rotationSpeed: 1
 }
 
-export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
+export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual, starColor = '#e5a35c') => {
   const planetGroup = new THREE.Group()
   const detailGroup = new THREE.Group()
   detailGroup.visible = false
@@ -33,7 +35,7 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
   planetGroup.position.set(0, 0, 0)
   scene.add(planetGroup)
 
-  const radius = 400
+  const radius = CELESTIAL_RENDER_CONFIG.atmosphere.planetRadius
   const widthSegments = 128
   const heightSegments = 128
   const sunDirection = new THREE.Vector3(1.0, 0.5, 0.2).normalize()
@@ -83,7 +85,7 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
 
     // 2. Atmosphere
     if (atmosphereMesh) {
-      detailGroup.remove(atmosphereMesh)
+      atmosphereMesh.parent?.remove(atmosphereMesh)
       atmosphereMesh = null
     }
     if (atmosphereGeometry) {
@@ -154,7 +156,11 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
         uOceanLevel: { value: visual.oceanLevel },
         uIceAmount: { value: visual.iceAmount },
         uAtmosphereColor: { value: new THREE.Color(visual.atmosphereColor) },
-        uAtmosphereThickness: { value: visual.atmosphereThickness }
+        uAtmosphereThickness: { value: visual.atmosphereThickness },
+        uStarColor: { value: new THREE.Color(starColor) },
+        uRayleighCoefficients: { value: new THREE.Vector3(...CELESTIAL_RENDER_CONFIG.atmosphere.rayleighCoefficients) },
+        uMieCoefficients: { value: new THREE.Vector3(...CELESTIAL_RENDER_CONFIG.atmosphere.mieCoefficients) },
+        uAtmosphereHeight: { value: CELESTIAL_RENDER_CONFIG.atmosphere.height }
       }
     })
     surfaceMesh = new THREE.Mesh(surfaceGeometry, surfaceMaterial)
@@ -168,25 +174,41 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
 
     // 2. Atmosphere
     if (visual.atmosphereThickness > 0.001) {
-      const atmosphereRadius = radius * 1.08
+      const atmosphereRadius = radius + CELESTIAL_RENDER_CONFIG.atmosphere.height
       atmosphereGeometry = new THREE.SphereGeometry(atmosphereRadius, widthSegments, heightSegments)
       atmosphereMaterial = new THREE.ShaderMaterial({
         vertexShader: atmosphereVertexShader,
         fragmentShader: atmosphereFragmentShader,
         uniforms: {
           uSunDirection: { value: sunDirection },
+          uStarColor: { value: new THREE.Color(starColor) },
           uAtmosphereColor: { value: new THREE.Color(visual.atmosphereColor) },
           uAtmosphereThickness: { value: visual.atmosphereThickness },
-          uViewSunAlignment: { value: 0 }
+          uViewSunAlignment: { value: 0 },
+          uPlanetRadius: { value: radius },
+          uAtmosphereHeight: { value: CELESTIAL_RENDER_CONFIG.atmosphere.height },
+          uRayleighCoefficients: { value: new THREE.Vector3(...CELESTIAL_RENDER_CONFIG.atmosphere.rayleighCoefficients) },
+          uMieCoefficients: { value: new THREE.Vector3(...CELESTIAL_RENDER_CONFIG.atmosphere.mieCoefficients) },
+          uRayleighScaleHeight: { value: CELESTIAL_RENDER_CONFIG.atmosphere.rayleighScaleHeight },
+          uMieScaleHeight: { value: CELESTIAL_RENDER_CONFIG.atmosphere.mieScaleHeight },
+          uMieAnisotropy: { value: CELESTIAL_RENDER_CONFIG.atmosphere.mieAnisotropy },
+          uTime: { value: 0 },
+          uAuroraStrength: { value: 0 },
+          uAuroraScale: { value: CELESTIAL_RENDER_CONFIG.aurora.curtainScale },
+          uAuroraMotionRate: { value: CELESTIAL_RENDER_CONFIG.aurora.motionRate },
+          uTwilightStrength: { value: CELESTIAL_RENDER_CONFIG.atmosphere.twilightStrength },
+        },
+        defines: {
+          ATMOSPHERE_STEPS: CELESTIAL_RENDER_CONFIG.atmosphere.steps.medium
         },
         transparent: true,
         blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide,
+        side: THREE.FrontSide,
         depthWrite: false
       })
       atmosphereMesh = new THREE.Mesh(atmosphereGeometry, atmosphereMaterial)
       atmosphereMesh.visible = effectsVisible
-      detailGroup.add(atmosphereMesh)
+      planetRotationGroup.add(atmosphereMesh)
     }
 
     // 3. Clouds
@@ -242,9 +264,40 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
   // Build the initial planet
   buildPlanet(currentVisual)
 
+  let reducedMotion = false
+
+  const setRenderQuality = (tier: RenderQualityTier, prefersReducedMotion = false) => {
+    reducedMotion = prefersReducedMotion
+    if (!atmosphereMaterial) return
+
+    const nextDefines = tier === 'low'
+      ? { ATMOSPHERE_LOW_QUALITY: 1 }
+      : { ATMOSPHERE_STEPS: CELESTIAL_RENDER_CONFIG.atmosphere.steps[tier] }
+    atmosphereMaterial.defines = nextDefines
+    atmosphereMaterial.needsUpdate = true
+    if (atmosphereMaterial.uniforms.uAuroraStrength) {
+      atmosphereMaterial.uniforms.uAuroraStrength.value = tier === 'low' || reducedMotion
+        ? 0
+        : CELESTIAL_RENDER_CONFIG.aurora.strength
+    }
+  }
+
+  const setAtmosphereCameraRadius = (cameraRadius: number) => {
+    if (!atmosphereMaterial) return
+    const outerRadius = radius + CELESTIAL_RENDER_CONFIG.atmosphere.height
+    const side = cameraRadius < outerRadius ? THREE.BackSide : THREE.FrontSide
+    if (atmosphereMaterial.side !== side) {
+      atmosphereMaterial.side = side
+      atmosphereMaterial.needsUpdate = true
+    }
+  }
+
   const update = (time: number, progress: number, viewSunAlignment = 0) => {
     if (atmosphereMaterial?.uniforms?.uViewSunAlignment) {
       atmosphereMaterial.uniforms.uViewSunAlignment.value = viewSunAlignment
+    }
+    if (atmosphereMaterial?.uniforms?.uTime) {
+      atmosphereMaterial.uniforms.uTime.value = reducedMotion ? 0 : time
     }
 
     // 1. Deterministic scroll-driven rotation (surface)
@@ -315,6 +368,8 @@ export const usePlanet = (scene: THREE.Scene, initialVisual?: PlanetVisual) => {
     precompileEffects,
     setDetailsVisible,
     setEffectsVisible,
+    setRenderQuality,
+    setAtmosphereCameraRadius,
     cleanup,
     get surfaceRotation() {
       return surfaceMesh ? surfaceMesh.rotation.y : 0

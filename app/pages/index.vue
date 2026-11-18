@@ -1,5 +1,6 @@
 <template>
   <div
+    ref="pageRoot"
     class="orbital-page relative select-none"
     :style="{ height: `${totalScrollHeightVh}vh` }"
   >
@@ -7,7 +8,7 @@
     <OrbitalScene
       v-if="sceneRequested"
       :scroll-progress="localProgress"
-      class="sticky top-0 h-screen w-full"
+      class="sticky top-0 h-[100svh] w-full"
     />
 
     <!-- Mission Intro -->
@@ -53,6 +54,7 @@
 import { computed, defineAsyncComponent, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import gsap from 'gsap'
+import { ScrollTrigger } from 'gsap/ScrollTrigger'
 import OrbitalIntro from '~/components/orbital/OrbitalIntro.vue'
 import SurveyComplete from '~/components/orbital/SurveyComplete.vue'
 import { useLenis } from '~/composables/useLenis'
@@ -63,10 +65,12 @@ const OrbitalScene = defineAsyncComponent(() => import('~/components/orbital/Orb
 
 const route = useRoute()
 const router = useRouter()
+gsap.registerPlugin(ScrollTrigger)
 const activePlanet = kepler186.planets[0]!
 const totalScrollHeightVh = 900
 
 const scrollProgress = ref(0)
+const pageRoot = ref<HTMLElement | null>(null)
 const sceneRequested = ref(false)
 const prefersReducedMotion = ref(false)
 
@@ -110,20 +114,10 @@ const returnToStart = () => {
   }
 }
 
-// Scroll progress is the single source of truth for the camera and overlays.
+// ScrollTrigger owns one normalized timeline for the camera and overlays.
 let ctx: gsap.Context
-
-const onScroll = () => {
-  let progress = 0
-  const scrollY = window.scrollY
-  const maxScroll = document.documentElement.scrollHeight - window.innerHeight
-  if (lenis.value && lenis.value.limit > 0) {
-    progress = lenis.value.progress
-  } else if (maxScroll > 0) {
-    progress = scrollY / maxScroll
-  }
-  scrollProgress.value = Math.max(0, Math.min(1, progress))
-}
+let initialLayoutFrame = 0
+const scrollState = { progress: 0 }
 
 useSeoMeta({
   title: 'ORBITAL — A Journey Beyond The Known',
@@ -147,12 +141,6 @@ onMounted(() => {
     history.scrollRestoration = 'manual'
   }
 
-  // Always bind window scroll as reliable fallback and sync
-  window.addEventListener('scroll', onScroll, { passive: true })
-  if (lenis.value) {
-    lenis.value.on('scroll', onScroll)
-  }
-
   // Keep old links focused on the single Kepler-186f survey.
   const setupInitialScroll = () => {
     resizeLenis()
@@ -162,17 +150,19 @@ onMounted(() => {
     window.scrollTo(0, 0)
     if (lenis.value) lenis.value.scrollTo(0, { immediate: true })
     scrollProgress.value = 0
+    scrollState.progress = 0
+    ScrollTrigger.refresh()
   }
 
   // Execute scroll positioning after DOM layout settles
-  window.requestAnimationFrame(() => {
+  initialLayoutFrame = window.requestAnimationFrame(() => {
     setupInitialScroll()
   })
 
   sceneRequested.value = true
 
-  if (!prefersReducedMotion.value) {
-    ctx = gsap.context(() => {
+  ctx = gsap.context(() => {
+    if (!prefersReducedMotion.value) {
       gsap.from('.intro-content', {
         opacity: 0,
         y: 30,
@@ -192,17 +182,33 @@ onMounted(() => {
         duration: 1.5,
         ease: 'sine.inOut'
       })
+    }
+
+    const journey = gsap.timeline({
+      scrollTrigger: {
+        trigger: pageRoot.value!,
+        start: 'top top',
+        end: 'bottom bottom',
+        scrub: true,
+        invalidateOnRefresh: true
+      }
     })
-  }
+
+    journey.to(scrollState, {
+      progress: 1,
+      duration: 1,
+      ease: 'none',
+      onUpdate: () => {
+        scrollProgress.value = gsap.utils.clamp(0, 1, scrollState.progress)
+      }
+    })
+  }, pageRoot.value ?? undefined)
 
 })
 
 onBeforeUnmount(() => {
+  if (initialLayoutFrame) window.cancelAnimationFrame(initialLayoutFrame)
   if (ctx) ctx.revert()
-  window.removeEventListener('scroll', onScroll)
-  if (lenis.value) {
-    lenis.value.off('scroll', onScroll)
-  }
 })
 </script>
 
@@ -223,6 +229,12 @@ onBeforeUnmount(() => {
 
 .orbital-page {
   background: var(--orbital-void);
+}
+
+@supports (height: 100dvh) {
+  .orbital-page :deep(.orbital-scene) {
+    height: 100dvh;
+  }
 }
 
 .survey-marker-title {

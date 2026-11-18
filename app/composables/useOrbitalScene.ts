@@ -1,8 +1,26 @@
 import * as THREE from 'three'
+import gsap from 'gsap'
+import { getGPUTier } from 'detect-gpu'
+import {
+  BlendFunction,
+  BloomEffect,
+  ChromaticAberrationEffect,
+  EffectComposer,
+  EffectPass,
+  NoiseEffect,
+  RenderPass,
+  SMAAEffect,
+  ToneMappingEffect,
+  ToneMappingMode,
+  VignetteEffect
+} from 'postprocessing'
 import type { Ref } from 'vue'
 import { usePlanet } from './usePlanet'
 import { getSystem } from '~/data/systems'
 import { TIMELINE } from '~/config/timeline'
+import { POST_PROCESSING_CONFIG } from '~/config/postprocessing'
+import { CELESTIAL_RENDER_CONFIG, type RenderQualityTier } from '~/config/celestialRender'
+import { milkyWayFragmentShader, milkyWayVertexShader, solarFragmentShader, solarVertexShader } from '~/shaders/spaceShaders'
 
 const kepler186System = getSystem('kepler-186')!
 const SYSTEM_REVEAL_AT = TIMELINE.systemReveal
@@ -15,23 +33,30 @@ export const useOrbitalScene = (
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
   let renderer: THREE.WebGLRenderer
+  let composer: EffectComposer | null = null
+  let renderPass: RenderPass | null = null
+  let effectPasses: EffectPass[] = []
+  let qualityTier: 'high' | 'medium' | 'low' = 'medium'
   let starParticles: THREE.Points
-  let sunSprite: THREE.Sprite
+  let sunMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>
+  let milkyWayMesh: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>
   let systemMapGroup: THREE.Group
   let systemMapMaterials: THREE.Material[] = []
   let glareSprite: THREE.Sprite
   let glareTexture: THREE.CanvasTexture
-  let animationFrameId = 0
   let initialized = false
-  let rendererReady = false
   let running = false
+  let renderTicker: ((time: number) => void) | undefined
   let planetController: ReturnType<typeof usePlanet> | null = null
   let pixelRatio = 1
   const maxPixelRatio = () => Math.min(window.devicePixelRatio || 1, 1.5)
   const minPixelRatio = () => Math.min(window.devicePixelRatio || 1, 0.75)
+  const isAtMinimumPixelRatio = () => pixelRatio <= minPixelRatio() + 0.001
   let slowFrames = 0
   let fastFrames = 0
   let previousFrameTime = 0
+  let smoothedProgress = 0
+  let progressVelocity = 0
   let lastFrameDelta = 0
   let lastProfileTime = 0
   let visualCompileRevision = 0
@@ -59,31 +84,6 @@ export const useOrbitalScene = (
   const systemCameraEnd = systemCenter.clone().addScaledVector(systemOrbitNormal, 18500)
 
   rotationAxis.crossVectors(startDir, sunDir.clone().negate()).normalize()
-
-  const createRadialTexture = (warm = false) => {
-    const canvas = document.createElement('canvas')
-    canvas.width = 256
-    canvas.height = 256
-    const context = canvas.getContext('2d')
-    if (context) {
-      const gradient = context.createRadialGradient(128, 128, 0, 128, 128, 128)
-      if (warm) {
-        gradient.addColorStop(0, 'rgba(255, 248, 224, 0.92)')
-        gradient.addColorStop(0.10, 'rgba(255, 224, 184, 0.58)')
-        gradient.addColorStop(0.30, 'rgba(255, 174, 112, 0.22)')
-        gradient.addColorStop(0.62, 'rgba(255, 126, 66, 0.07)')
-        gradient.addColorStop(1, 'rgba(255, 126, 66, 0)')
-      } else {
-        gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-        gradient.addColorStop(0.1, 'rgba(255, 255, 255, 0.95)')
-        gradient.addColorStop(0.3, 'rgba(210, 230, 255, 0.4)')
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)')
-      }
-      context.fillStyle = gradient
-      context.fillRect(0, 0, 256, 256)
-    }
-    return new THREE.CanvasTexture(canvas)
-  }
 
   const createLensFlareTexture = () => {
     const canvas = document.createElement('canvas')
@@ -154,6 +154,7 @@ export const useOrbitalScene = (
     const positions = new Float32Array(starCount * 3)
     const opacities = new Float32Array(starCount)
     const sizes = new Float32Array(starCount)
+    const colors = new Float32Array(starCount * 3)
 
     for (let i = 0; i < starCount; i++) {
       const distLayer = Math.pow(Math.random(), 3.0)
@@ -168,11 +169,19 @@ export const useOrbitalScene = (
       positions[i * 3 + 2] = (Math.random() - 0.5) * 20000
       opacities[i] = (Math.random() * 0.7 + 0.1) * (1.0 - distLayer * 0.7)
       sizes[i] = Math.pow(Math.random(), 4.0) * 2.5 + 0.3
+      const tint = Math.random()
+      const starColor = tint < 0.18
+        ? [1.0, 0.72, 0.5]
+        : tint < 0.36
+          ? [0.72, 0.84, 1.0]
+          : [0.92, 0.96, 1.0]
+      colors.set(starColor, i * 3)
     }
 
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     geometry.setAttribute('aOpacity', new THREE.BufferAttribute(opacities, 1))
     geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1))
+    geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3))
 
     const material = new THREE.ShaderMaterial({
       uniforms: {
@@ -183,12 +192,15 @@ export const useOrbitalScene = (
       vertexShader: `
         attribute float aOpacity;
         attribute float aSize;
+        attribute vec3 aColor;
         varying float vOpacity;
+        varying vec3 vColor;
         varying vec2 vScreenDir;
         uniform float uPixelRatio;
         uniform float uWarp;
         void main() {
           vOpacity = aOpacity;
+          vColor = aColor;
           vec3 p = position;
           // Warp: accelerate stars towards the observer along Z
           p.z += uWarp * 18000.0 * (0.8 + aOpacity * 0.4);
@@ -206,11 +218,13 @@ export const useOrbitalScene = (
       `,
       fragmentShader: `
         varying float vOpacity;
+        varying vec3 vColor;
         varying vec2 vScreenDir;
         uniform vec3 uColor;
         uniform float uWarp;
         void main() {
           vec2 coord = gl_PointCoord - vec2(0.5);
+          vec3 starColor = uColor * vColor;
           if (uWarp > 0.001) {
             float radial = dot(coord, vScreenDir);
             float perp = coord.x * vScreenDir.y - coord.y * vScreenDir.x;
@@ -218,13 +232,13 @@ export const useOrbitalScene = (
             float dist = length(vec2(radial, perp * 2.2));
             if (dist > 0.5) discard;
             float alpha = smoothstep(0.5, 0.05, dist) * vOpacity;
-            vec3 warpColor = mix(uColor, vec3(1.2, 1.35, 1.6), uWarp * 0.75);
+            vec3 warpColor = mix(starColor, vec3(1.2, 1.35, 1.6), uWarp * 0.75);
             gl_FragColor = vec4(warpColor, alpha);
           } else {
             float dist = distance(gl_PointCoord, vec2(0.5));
             if (dist > 0.5) discard;
             float alpha = smoothstep(0.5, 0.1, dist) * vOpacity;
-            gl_FragColor = vec4(uColor, alpha);
+            gl_FragColor = vec4(starColor, alpha);
           }
         }
       `,
@@ -235,6 +249,86 @@ export const useOrbitalScene = (
 
     starParticles = new THREE.Points(geometry, material)
     scene.add(starParticles)
+  }
+
+  const createMilkyWay = () => {
+    const geometry = new THREE.SphereGeometry(50000, 48, 32)
+    const material = new THREE.ShaderMaterial({
+      uniforms: { uOpacity: { value: CELESTIAL_RENDER_CONFIG.milkyWay.opacity.medium } },
+      vertexShader: milkyWayVertexShader,
+      fragmentShader: milkyWayFragmentShader,
+      defines: { MILKYWAY_LOW_QUALITY: 1 },
+      side: THREE.BackSide,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false
+    })
+    milkyWayMesh = new THREE.Mesh(geometry, material)
+    milkyWayMesh.renderOrder = -10
+    scene.add(milkyWayMesh)
+  }
+
+  const createSun = () => {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uStarColor: { value: new THREE.Color(kepler186System.starColor) },
+        uTime: { value: 0 },
+        uCoronaStrength: { value: CELESTIAL_RENDER_CONFIG.star.coronaStrength.medium },
+        uGranulationStrength: { value: CELESTIAL_RENDER_CONFIG.star.granulationStrength },
+        uFlareStrength: { value: CELESTIAL_RENDER_CONFIG.star.flareStrength }
+      },
+      vertexShader: solarVertexShader,
+      fragmentShader: solarFragmentShader,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false
+    })
+    sunMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material)
+    sunMesh.position.copy(sunDir).multiplyScalar(8000)
+    sunMesh.scale.set(600, 600, 1)
+    sunMesh.frustumCulled = false
+    scene.add(sunMesh)
+  }
+
+  const getEffectiveQualityTier = (): RenderQualityTier =>
+    reducedMotion || isAtMinimumPixelRatio() ? 'low' : qualityTier
+
+  const applyCelestialQuality = () => {
+    const tier = getEffectiveQualityTier()
+    const starMaterial = sunMesh?.material
+    if (starMaterial) {
+      if (starMaterial.uniforms.uCoronaStrength) {
+        starMaterial.uniforms.uCoronaStrength.value = CELESTIAL_RENDER_CONFIG.star.coronaStrength[tier]
+      }
+      if (starMaterial.uniforms.uGranulationStrength) {
+        starMaterial.uniforms.uGranulationStrength.value = tier === 'low'
+          ? CELESTIAL_RENDER_CONFIG.star.granulationStrength * 0.5
+          : CELESTIAL_RENDER_CONFIG.star.granulationStrength
+      }
+      if (starMaterial.uniforms.uFlareStrength) {
+        starMaterial.uniforms.uFlareStrength.value = tier === 'low'
+          ? CELESTIAL_RENDER_CONFIG.star.flareStrength * 0.4
+          : CELESTIAL_RENDER_CONFIG.star.flareStrength
+      }
+    }
+
+    const milkyMaterial = milkyWayMesh?.material
+    if (milkyMaterial) {
+      if (milkyMaterial.uniforms.uOpacity) {
+        milkyMaterial.uniforms.uOpacity.value = CELESTIAL_RENDER_CONFIG.milkyWay.opacity[tier]
+      }
+      const nextDefines = tier === 'low' ? { MILKYWAY_LOW_QUALITY: 1 } : {}
+      if (JSON.stringify(milkyMaterial.defines) !== JSON.stringify(nextDefines)) {
+        milkyMaterial.defines = nextDefines
+        milkyMaterial.needsUpdate = true
+      }
+    }
+
+    planetController?.setRenderQuality(tier, reducedMotion)
   }
 
   const createSystemOverview = () => {
@@ -256,7 +350,7 @@ export const useOrbitalScene = (
       for (let i = 0; i < 192; i++) {
         const angle = (i / 192) * Math.PI * 2
         points.push(
-          sunSprite.position.clone()
+          sunMesh.position.clone()
             .addScaledVector(systemOrbitAxisX, Math.cos(angle) * orbitRadius)
             .addScaledVector(systemOrbitAxisY, Math.sin(angle) * orbitRadius)
         )
@@ -286,7 +380,7 @@ export const useOrbitalScene = (
             depthWrite: false
           })
         )
-        marker.position.copy(sunSprite.position)
+        marker.position.copy(sunMesh.position)
           .addScaledVector(systemOrbitAxisX, Math.cos(phase) * orbitRadius)
           .addScaledVector(systemOrbitAxisY, Math.sin(phase) * orbitRadius)
         marker.renderOrder = 3
@@ -305,43 +399,121 @@ export const useOrbitalScene = (
     }
   }
 
+  const rebuildEffectPasses = () => {
+    if (!composer || !camera) return
+
+    for (const pass of effectPasses) {
+      composer.removePass(pass)
+      pass.dispose()
+    }
+    effectPasses = []
+
+    const addPass = (...effects: Array<BloomEffect | ChromaticAberrationEffect | NoiseEffect | SMAAEffect | ToneMappingEffect | VignetteEffect>) => {
+      if (!composer || effects.length === 0) return
+      const pass = new EffectPass(camera, ...effects)
+      composer.addPass(pass)
+      effectPasses.push(pass)
+    }
+    const createVignette = () => new VignetteEffect({
+      offset: POST_PROCESSING_CONFIG.vignette.offset,
+      darkness: POST_PROCESSING_CONFIG.vignette.darkness
+    })
+    const createToneMapping = () => new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC })
+
+    const fullQuality = qualityTier === 'high' && !reducedMotion
+    const mediumQuality = qualityTier === 'medium' && !reducedMotion && !isAtMinimumPixelRatio()
+
+    if (fullQuality && !isAtMinimumPixelRatio()) {
+      const bloom = new BloomEffect({
+        mipmapBlur: true,
+        intensity: POST_PROCESSING_CONFIG.bloom.intensity,
+        luminanceThreshold: POST_PROCESSING_CONFIG.bloom.luminanceThreshold,
+        luminanceSmoothing: POST_PROCESSING_CONFIG.bloom.luminanceSmoothing,
+        radius: POST_PROCESSING_CONFIG.bloom.radius,
+        levels: POST_PROCESSING_CONFIG.bloom.levels
+      })
+      const grain = new NoiseEffect({ blendFunction: BlendFunction.OVERLAY, premultiply: true })
+      grain.blendMode.setOpacity(POST_PROCESSING_CONFIG.grain.amount)
+      const vignette = createVignette()
+      const aberration = new ChromaticAberrationEffect({
+        offset: new THREE.Vector2(POST_PROCESSING_CONFIG.aberration.offset, POST_PROCESSING_CONFIG.aberration.offset),
+        radialModulation: true,
+        modulationOffset: POST_PROCESSING_CONFIG.aberration.modulationOffset
+      })
+
+      // pmndrs restricts UV-sampling effects to one per EffectPass.
+      addPass(bloom, vignette, grain)
+      addPass(aberration)
+      addPass(new SMAAEffect(), createToneMapping())
+      return
+    }
+
+    if (fullQuality) {
+      addPass(createVignette())
+      addPass(new SMAAEffect(), createToneMapping())
+      return
+    }
+
+    if (mediumQuality) {
+      const bloom = new BloomEffect({
+        mipmapBlur: true,
+        intensity: POST_PROCESSING_CONFIG.bloom.intensity,
+        luminanceThreshold: POST_PROCESSING_CONFIG.bloom.luminanceThreshold,
+        luminanceSmoothing: POST_PROCESSING_CONFIG.bloom.luminanceSmoothing,
+        radius: POST_PROCESSING_CONFIG.bloom.radius,
+        levels: POST_PROCESSING_CONFIG.bloom.levels
+      })
+      const grain = new NoiseEffect({ blendFunction: BlendFunction.OVERLAY, premultiply: true })
+      grain.blendMode.setOpacity(POST_PROCESSING_CONFIG.grain.amount)
+      addPass(bloom, createVignette(), grain, createToneMapping())
+      return
+    }
+
+    addPass(createVignette(), createToneMapping())
+  }
+
   const setPixelRatio = (nextRatio: number) => {
     if (!renderer || !camera || Math.abs(nextRatio - pixelRatio) < 0.01) return
+    const wasAtMinimum = isAtMinimumPixelRatio()
     pixelRatio = nextRatio
     renderer.setPixelRatio(pixelRatio)
-    renderer.setSize(window.innerWidth, window.innerHeight)
+    const width = containerRef.value?.clientWidth || window.innerWidth
+    const height = containerRef.value?.clientHeight || window.innerHeight
+    if (composer) composer.setSize(width, height)
+    else renderer.setSize(width, height)
     const starMaterial = starParticles?.material as THREE.ShaderMaterial | undefined
     if (starMaterial?.uniforms?.uPixelRatio) {
       starMaterial.uniforms.uPixelRatio.value = pixelRatio
     }
+    if (wasAtMinimum !== isAtMinimumPixelRatio()) {
+      rebuildEffectPasses()
+      applyCelestialQuality()
+    }
   }
 
   const setStarColor = (colorHex: string) => {
-    if (!sunSprite || !glareSprite) return
+    if (!sunMesh || !glareSprite) return
     const col = new THREE.Color(colorHex)
-    sunSprite.material.color.copy(col)
+    sunMesh.material.uniforms.uStarColor?.value.copy(col)
     glareSprite.material.color.copy(col)
   }
 
   const onWindowResize = () => {
     if (!camera || !renderer) return
-    camera.aspect = window.innerWidth / window.innerHeight
+    const width = containerRef.value?.clientWidth || window.innerWidth
+    const height = containerRef.value?.clientHeight || window.innerHeight
+    camera.aspect = width / height
     camera.updateProjectionMatrix()
-    renderer.setSize(window.innerWidth, window.innerHeight)
+    if (composer) composer.setSize(width, height)
+    else renderer.setSize(width, height)
   }
 
   const onVisibilityChange = () => {
     if (document.hidden) {
-      running = false
-      cancelAnimationFrame(animationFrameId)
-      animationFrameId = 0
       previousFrameTime = 0
       return
     }
-    if (initialized && rendererReady && !running) {
-      running = true
-      animationFrameId = requestAnimationFrame(animate)
-    }
+    previousFrameTime = 0
   }
 
   const init = () => {
@@ -363,23 +535,63 @@ export const useOrbitalScene = (
       return
     }
     pixelRatio = maxPixelRatio()
+    const width = containerRef.value.clientWidth || window.innerWidth
+    const height = containerRef.value.clientHeight || window.innerHeight
+    camera.aspect = width / height
+    camera.updateProjectionMatrix()
     renderer.setPixelRatio(pixelRatio)
-    renderer.setSize(window.innerWidth, window.innerHeight)
+    // Keep tone mapping in the post stack and let pmndrs perform the final
+    // output color-space conversion once.
+    renderer.toneMapping = THREE.NoToneMapping
+    renderer.outputColorSpace = THREE.SRGBColorSpace
+    renderer.setSize(width, height)
     containerRef.value.appendChild(renderer.domElement)
 
-    createStarField()
+    try {
+      const supportsHalfFloat = renderer.capabilities.isWebGL2 && renderer.extensions.has('EXT_color_buffer_float')
+      composer = new EffectComposer(renderer, {
+        frameBufferType: supportsHalfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType,
+        multisampling: 0
+      })
+      renderPass = new RenderPass(scene, camera)
+      composer.addPass(renderPass)
+      composer.setSize(width, height)
+      rebuildEffectPasses()
+    } catch (error) {
+      console.warn('ORBITAL post-processing is unavailable; using the direct WebGL render path.', error)
+      composer?.dispose()
+      composer = null
+      renderPass = null
+      effectPasses = []
+    }
 
-    const sunMaterial = new THREE.SpriteMaterial({
-      map: createRadialTexture(),
-      color: 0xffffff,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
+    // Render immediately at medium quality; GPU detection can finish in the
+    // background without delaying the scene or introducing a loading screen.
+    void getGPUTier({ glContext: renderer.getContext() }).then((result) => {
+      if (!initialized) return
+      if (result.type === 'FALLBACK' || result.type === 'SSR') {
+        qualityTier = 'medium'
+      } else if (result.tier >= 3) {
+        qualityTier = 'high'
+      } else if (result.tier === 2) {
+        qualityTier = 'medium'
+      } else {
+        qualityTier = 'low'
+      }
+      rebuildEffectPasses()
+      applyCelestialQuality()
+    }).catch((error: unknown) => {
+      console.warn('ORBITAL GPU quality detection failed; using medium quality.', error)
+      if (initialized) {
+        qualityTier = 'medium'
+        rebuildEffectPasses()
+        applyCelestialQuality()
+      }
     })
-    sunSprite = new THREE.Sprite(sunMaterial)
-    sunSprite.position.copy(sunDir).multiplyScalar(8000)
-    sunSprite.scale.set(600, 600, 1)
-    scene.add(sunSprite)
+
+    createStarField()
+    createMilkyWay()
+    createSun()
     createSystemOverview()
 
     glareTexture = createLensFlareTexture()
@@ -399,7 +611,8 @@ export const useOrbitalScene = (
     scene.add(glareSprite)
 
     const initialVisual = kepler186System.planets[0]?.visual
-    planetController = usePlanet(scene, initialVisual)
+    planetController = usePlanet(scene, initialVisual, kepler186System.starColor)
+    applyCelestialQuality()
 
     const precompileCurrentPlanet = (keepHiddenOnFailure = false) => {
       if (!initialized || !renderer || !camera || !planetController) return
@@ -422,15 +635,16 @@ export const useOrbitalScene = (
 
     setStarColor(kepler186System.starColor)
     window.addEventListener('resize', onWindowResize, { passive: true })
+    window.visualViewport?.addEventListener('resize', onWindowResize, { passive: true })
     document.addEventListener('visibilitychange', onVisibilityChange)
 
     const startRenderer = () => {
       if (!initialized) return
       glareSprite.visible = false
-      rendererReady = true
       if (!document.hidden && !running) {
         running = true
-        animationFrameId = requestAnimationFrame(animate)
+        renderTicker = (time: number) => animate(time * 1000)
+        gsap.ticker.add(renderTicker)
       }
       precompileCurrentPlanet(true)
     }
@@ -442,9 +656,11 @@ export const useOrbitalScene = (
   }
 
   const animate = (timestamp: number) => {
-    if (!running) return
-    animationFrameId = requestAnimationFrame(animate)
+    if (!running || document.hidden) return
 
+    const deltaSeconds = previousFrameTime > 0
+      ? Math.min((timestamp - previousFrameTime) / 1000, 0.05)
+      : 0
     if (previousFrameTime > 0) {
       lastFrameDelta = timestamp - previousFrameTime
       const frameMs = lastFrameDelta
@@ -472,10 +688,23 @@ export const useOrbitalScene = (
     const time = timestamp * 0.001
     const rawProgress = scrollProgress.value
 
+    if (deltaSeconds > 0 && !reducedMotion) {
+      const omega = 14
+      const error = smoothedProgress - rawProgress
+      const c = progressVelocity + omega * error
+      const decay = Math.exp(-omega * deltaSeconds)
+      const nextError = (error + c * deltaSeconds) * decay
+      progressVelocity = (progressVelocity - omega * c * deltaSeconds) * decay
+      smoothedProgress = rawProgress + nextError
+    } else if (reducedMotion) {
+      smoothedProgress = rawProgress
+      progressVelocity = 0
+    }
+
     // Reduced-motion: snap to stable poses
     const p = reducedMotion
       ? rawProgress < 0.2 ? 0 : rawProgress < 0.53 ? 0.48 : rawProgress < SYSTEM_REVEAL_AT ? 0.62 : 1
-      : rawProgress
+      : smoothedProgress
     const journeyProgress = THREE.MathUtils.clamp(p / SYSTEM_REVEAL_AT, 0, 1)
     const systemProgress = THREE.MathUtils.clamp((p - SYSTEM_REVEAL_AT) / (TIMELINE.warpOutStart - SYSTEM_REVEAL_AT), 0, 1)
     const systemEase = THREE.MathUtils.smoothstep(systemProgress, 0, 1)
@@ -517,6 +746,11 @@ export const useOrbitalScene = (
       finalLookAt.lerp(systemCenter, systemEase)
       camera.lookAt(finalLookAt)
     }
+    planetController?.setAtmosphereCameraRadius(camera.position.length())
+    sunMesh.quaternion.copy(camera.quaternion)
+    if (sunMesh.material.uniforms.uTime) {
+      sunMesh.material.uniforms.uTime.value = reducedMotion ? 0 : time
+    }
 
     // Warp Out segment
     const isWarping = !reducedMotion && p >= TIMELINE.warpOutStart
@@ -546,7 +780,7 @@ export const useOrbitalScene = (
 
     if (activeGlare > 0.005) {
       camera.updateMatrixWorld()
-      sunScreen.copy(sunSprite.position).project(camera)
+      sunScreen.copy(sunMesh.position).project(camera)
       right.setFromMatrixColumn(camera.matrixWorld, 0)
       up.setFromMatrixColumn(camera.matrixWorld, 1)
       const distance = 8
@@ -590,7 +824,8 @@ export const useOrbitalScene = (
       setSystemMapOpacity(reducedMotion ? 1 : systemEase)
     }
 
-    renderer.render(scene, camera)
+    if (composer) composer.render(deltaSeconds)
+    else renderer.render(scene, camera)
 
     if (import.meta.dev && timestamp - lastProfileTime >= 1000) {
       const info = renderer.info
@@ -610,15 +845,17 @@ export const useOrbitalScene = (
   const cleanup = () => {
     if (!initialized) return
     initialized = false
-    rendererReady = false
     running = false
-    if (animationFrameId) cancelAnimationFrame(animationFrameId)
-    animationFrameId = 0
+    if (renderTicker) gsap.ticker.remove(renderTicker)
+    renderTicker = undefined
     previousFrameTime = 0
+    smoothedProgress = 0
+    progressVelocity = 0
     lastFrameDelta = 0
     lastProfileTime = 0
     visualCompileRevision++
     window.removeEventListener('resize', onWindowResize)
+    window.visualViewport?.removeEventListener('resize', onWindowResize)
     document.removeEventListener('visibilitychange', onVisibilityChange)
 
     if (systemMapGroup) {
@@ -634,20 +871,28 @@ export const useOrbitalScene = (
     planetController = null
     if (scene) {
       if (starParticles) scene.remove(starParticles)
-      if (sunSprite) scene.remove(sunSprite)
+      if (sunMesh) scene.remove(sunMesh)
+      if (milkyWayMesh) scene.remove(milkyWayMesh)
       if (glareSprite) scene.remove(glareSprite)
     }
     if (starParticles) {
       starParticles.geometry.dispose()
       ;(starParticles.material as THREE.Material).dispose()
     }
-    if (sunSprite) {
-      const material = sunSprite.material as THREE.SpriteMaterial
-      material.map?.dispose()
-      material.dispose()
+    if (sunMesh) {
+      sunMesh.geometry.dispose()
+      sunMesh.material.dispose()
+    }
+    if (milkyWayMesh) {
+      milkyWayMesh.geometry.dispose()
+      milkyWayMesh.material.dispose()
     }
     if (glareSprite) (glareSprite.material as THREE.Material).dispose()
     glareTexture?.dispose()
+    composer?.dispose()
+    composer = null
+    renderPass = null
+    effectPasses = []
     if (renderer) {
       renderer.domElement.parentElement?.removeChild(renderer.domElement)
       renderer.dispose()

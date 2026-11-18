@@ -26,6 +26,10 @@ uniform float uOceanLevel;
 uniform float uIceAmount;
 uniform vec3 uAtmosphereColor;
 uniform float uAtmosphereThickness;
+uniform vec3 uStarColor;
+uniform vec3 uRayleighCoefficients;
+uniform vec3 uMieCoefficients;
+uniform float uAtmosphereHeight;
 varying vec2 vUv;
 varying vec3 vNormalWorld;
 varying vec3 vNormalLocal;
@@ -450,20 +454,21 @@ void main() {
   vec3 ambient = albedo * 0.02; // Very subtle base ambient
   vec3 finalColor = albedo * diffuse * 1.5 + vec3(specular) + ambient;
   
-  // Calculate view-dependent fresnel for atmospheric scattering on the surface
-  float fresnel = max(1.0 - dot(worldNormal, viewDir), 0.0);
-  float terminator = dot(worldNormal, sunDir);
-  
-  // Warm / Red / Orange illumination on the sun-facing limb
-  vec3 warmScatter = vec3(1.0, 0.45, 0.15); // Deep orange/red
-  // Broader, stronger scattering on the daylight side to restore the physical warm glaze
-  float warmMask = pow(fresnel, 2.5) * smoothstep(-0.2, 0.6, terminator);
-  finalColor += warmScatter * warmMask * 0.8 * uAtmosphereThickness;
-  
-  // Cool / Blue atmospheric scattering on the grazing angles near the terminator / night
-  vec3 coolScatter = uAtmosphereColor * vec3(0.36, 0.65, 0.90);
-  float coolMask = pow(fresnel, 4.0) * smoothstep(0.2, -0.6, terminator);
-  finalColor += coolScatter * coolMask * 0.4 * uAtmosphereThickness;
+  // Carry a little volume inscatter onto the terrain silhouette so the opaque
+  // surface and transparent atmosphere meet without a hard edge.
+  float viewFacing = max(dot(normalize(worldNormal), normalize(viewDir)), 0.0);
+  float limbPath = pow(1.0 - viewFacing, 3.2);
+  float terminator = dot(normalize(worldNormal), sunDir);
+  float twilightBand = exp(-pow((terminator + 0.015) / 0.2, 2.0));
+  float atmosphereDepth = clamp(uAtmosphereHeight / 32.0, 0.2, 1.5);
+  vec3 spectralInscatter = uStarColor * (
+    uRayleighCoefficients * 0.18 + uMieCoefficients * 0.42
+  );
+  vec3 warmTwilight = uStarColor * vec3(1.0, 0.34, 0.13);
+  float limbHaze = limbPath * atmosphereDepth * uAtmosphereThickness;
+  finalColor *= 1.0 - limbHaze * 0.08;
+  finalColor += spectralInscatter * limbHaze * (0.45 + twilightBand * 0.8);
+  finalColor += warmTwilight * twilightBand * limbPath * uAtmosphereThickness * 0.12;
   
   // Subtle night-side environmental fill (so dark side isn't pure black, preserving terrain readability)
   vec3 nightAmbient = albedo * vec3(0.04, 0.06, 0.1); 
@@ -494,9 +499,11 @@ void main() {
 
 export const atmosphereVertexShader = `
 varying vec3 vNormalWorld;
+varying vec3 vNormalLocal;
 varying vec3 vPositionWorld;
 
 void main() {
+  vNormalLocal = normalize(normal);
   vNormalWorld = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
   vPositionWorld = (modelMatrix * vec4(position, 1.0)).xyz;
   gl_Position = projectionMatrix * viewMatrix * vec4(vPositionWorld, 1.0);
@@ -505,75 +512,127 @@ void main() {
 
 export const atmosphereFragmentShader = `
 uniform vec3 uSunDirection;
+uniform vec3 uStarColor;
 uniform vec3 uAtmosphereColor;
+uniform vec3 uRayleighCoefficients;
+uniform vec3 uMieCoefficients;
+uniform float uPlanetRadius;
+uniform float uAtmosphereHeight;
+uniform float uRayleighScaleHeight;
+uniform float uMieScaleHeight;
+uniform float uMieAnisotropy;
 uniform float uAtmosphereThickness;
 uniform float uViewSunAlignment;
+uniform float uTime;
+uniform float uAuroraStrength;
+uniform float uAuroraScale;
+uniform float uAuroraMotionRate;
+uniform float uTwilightStrength;
 varying vec3 vNormalWorld;
+varying vec3 vNormalLocal;
 varying vec3 vPositionWorld;
+
+vec2 sphereRoots(vec3 origin, vec3 direction, float radius) {
+  float b = dot(origin, direction);
+  float c = dot(origin, origin) - radius * radius;
+  float h = b * b - c;
+  if (h < 0.0) return vec2(-1.0);
+  float root = sqrt(h);
+  return vec2(-b - root, -b + root);
+}
+
+float rayleighPhase(float cosine) {
+  return 0.75 * (1.0 + cosine * cosine);
+}
+
+float miePhase(float cosine, float g) {
+  float g2 = g * g;
+  float denominator = max(1.0 + g2 - 2.0 * g * cosine, 0.06);
+  return (1.0 - g2) / (denominator * sqrt(denominator));
+}
 
 void main() {
   vec3 normal = normalize(vNormalWorld);
   vec3 sunDir = normalize(uSunDirection);
-  
-  vec3 viewOffset = cameraPosition - vPositionWorld;
-  float distToCam = length(viewOffset);
-  vec3 viewDir = normalize(viewOffset);
-  
-  // Ensure normal always faces camera to support DoubleSide rendering when inside the atmosphere
-  vec3 faceNormal = dot(normal, viewDir) > 0.0 ? normal : -normal;
-  
-  // Fresnel for rim calculation
-  float fresnel = max(1.0 - dot(faceNormal, viewDir), 0.0);
-  
-  // 1. Core Rim (very tight to the edge)
-  float horizonRim = pow(fresnel, 24.0); 
-  // 2. Broader, softer atmospheric falloff
-  float atmosphereHaze = pow(fresnel, 6.0) * 0.25; 
-  
-  // Lighting factors
-  float sunFacing = dot(normal, sunDir);
-  
-  // 1. WARM LIMB (Sunrise / Sunset Glaze)
-  // Highly asymmetric, strongly biased toward the sun
-  float warmLimbMask = horizonRim * smoothstep(-0.2, 0.9, sunFacing);
-  float warmHazeMask = atmosphereHaze * smoothstep(0.0, 0.8, sunFacing);
-  
-  vec3 warmColor = vec3(1.0, 0.4, 0.1); // Deep amber/orange
-  vec3 goldColor = vec3(1.0, 0.75, 0.3); // Bright gold edge
-  vec3 limbGlowColor = mix(warmColor, goldColor, horizonRim);
-  
-  // 2. COOL ATMOSPHERE (Shadow / Non-Sun Limb)
-  // Exists on the dark side, wrapping slightly into the light
-  float coolLimbMask = horizonRim * smoothstep(0.3, -0.8, sunFacing);
-  float coolHazeMask = atmosphereHaze * smoothstep(0.5, -0.8, sunFacing);
-  
-  vec3 coolColor = uAtmosphereColor; // Deep space blue
-  
-  // 3. COMBINE
-  vec3 finalScatterColor = limbGlowColor * (warmLimbMask * 3.0 + warmHazeMask * 1.5) + 
-                           coolColor * (coolLimbMask * 1.0 + coolHazeMask * 0.8);
+  vec3 rayOrigin = cameraPosition;
+  vec3 rayDirection = normalize(vPositionWorld - rayOrigin);
+  vec3 viewDirection = -rayDirection;
+  float facing = max(dot(normal, viewDirection), 0.0);
+  float rim = pow(1.0 - facing, 2.25);
+  float sunFacing = dot(normalize(vPositionWorld), sunDir);
 
-  // Camera-facing gold/orange veiling scatter, independent of the cool blue rim.
-  // It hugs only the sunlit horizon and fades completely when the view turns away.
-  float solarHorizon = pow(fresnel, 8.0) * smoothstep(-0.25, 0.35, sunFacing);
-  finalScatterColor += vec3(1.0, 0.62, 0.28) * solarHorizon * uViewSunAlignment * 2.2;
-                           
-  // Eclipse forward scatter (when star is behind planet)
-  float backscatter = max(dot(viewDir, -sunDir), 0.0);
-  float eclipseGlow = horizonRim * pow(backscatter, 16.0) * 5.0;
-  finalScatterColor += vec3(1.0, 0.6, 0.2) * eclipseGlow;
-  
-  // Star bloom/glare across the horizon
-  // When the camera is looking near the sun over the horizon, boost the glow significantly
-  float starGlare = pow(max(dot(reflect(-viewDir, normal), sunDir), 0.0), 30.0) * horizonRim;
-  finalScatterColor += vec3(1.0, 0.85, 0.7) * starGlare * 4.0;
-  
-  // Modulate intensity slightly based on camera distance (thicker atmosphere when far away)
-  float distFactor = smoothstep(150.0, 2000.0, distToCam);
-  finalScatterColor *= mix(0.5, 1.0, distFactor) * uAtmosphereThickness;
-  
-  // Output additive RGB
-  gl_FragColor = vec4(finalScatterColor, 1.0);
+#ifdef ATMOSPHERE_LOW_QUALITY
+  float warmTerminator = exp(-pow((sunFacing + 0.02) / 0.22, 2.0));
+  float nightWrap = (1.0 - smoothstep(-0.34, 0.12, sunFacing)) * rim;
+  vec3 lowColor = uStarColor * (uRayleighCoefficients * 0.055 + uMieCoefficients * 0.12);
+  lowColor += uStarColor * vec3(1.0, 0.34, 0.12) * warmTerminator * rim * 0.11;
+  lowColor += vec3(0.018, 0.032, 0.06) * nightWrap;
+  gl_FragColor = vec4(lowColor * uAtmosphereThickness, 1.0);
+#else
+  vec2 atmosphereRoots = sphereRoots(rayOrigin, rayDirection, uPlanetRadius + uAtmosphereHeight);
+  if (atmosphereRoots.y <= 0.0) discard;
+  float rayStart = max(atmosphereRoots.x, 0.0);
+  float rayEnd = atmosphereRoots.y;
+  vec2 groundRoots = sphereRoots(rayOrigin, rayDirection, uPlanetRadius);
+  if (groundRoots.x > rayStart) rayEnd = min(rayEnd, groundRoots.x);
+  float rayLength = max(rayEnd - rayStart, 0.0);
+  if (rayLength <= 0.001) discard;
+
+  float cosineTheta = dot(sunDir, rayDirection);
+  float phaseR = rayleighPhase(cosineTheta);
+  float phaseM = miePhase(cosineTheta, uMieAnisotropy);
+  vec3 opticalDepth = vec3(0.0);
+  vec3 inscatter = vec3(0.0);
+  float stepLength = rayLength / float(ATMOSPHERE_STEPS);
+
+  for (int i = 0; i < ATMOSPHERE_STEPS; i++) {
+    float distanceAlongRay = rayStart + (float(i) + 0.5) * stepLength;
+    vec3 samplePosition = rayOrigin + rayDirection * distanceAlongRay;
+    float altitude = max(length(samplePosition) - uPlanetRadius, 0.0);
+    float rayleighDensity = exp(-altitude / max(uAtmosphereHeight * uRayleighScaleHeight, 0.001));
+    float mieDensity = exp(-altitude / max(uAtmosphereHeight * uMieScaleHeight, 0.001));
+    vec3 radial = normalize(samplePosition);
+
+    vec2 sunGroundRoots = sphereRoots(samplePosition, sunDir, uPlanetRadius);
+    float groundShadow = sunGroundRoots.x > 0.0 ? 0.0 : 1.0;
+    float sunZenith = max(dot(radial, sunDir), -0.18);
+    float sunPath = uAtmosphereHeight * (0.22 + 0.32 / max(sunZenith + 0.4, 0.12));
+    vec3 sunTransmittance = exp(-(
+      uRayleighCoefficients * rayleighDensity * sunPath +
+      uMieCoefficients * mieDensity * sunPath
+    ));
+    vec3 viewTransmittance = exp(-opticalDepth);
+    vec3 scattering = (
+      uRayleighCoefficients * rayleighDensity * phaseR +
+      uMieCoefficients * mieDensity * phaseM
+    ) * sunTransmittance * viewTransmittance * groundShadow;
+    inscatter += scattering * stepLength * uStarColor * 2.2;
+    opticalDepth += (
+      uRayleighCoefficients * rayleighDensity +
+      uMieCoefficients * mieDensity
+    ) * stepLength;
+  }
+
+  float twilightBand = exp(-pow((sunFacing + 0.015) / 0.19, 2.0));
+  float nightSide = 1.0 - smoothstep(-0.34, 0.08, sunFacing);
+  vec3 warmTwilight = uStarColor * vec3(1.0, 0.3, 0.09) * twilightBand * rim * uTwilightStrength;
+  vec3 nightHaze = vec3(0.024, 0.032, 0.058) * nightSide * rim * 0.22;
+  vec3 finalScatter = inscatter + warmTwilight + nightHaze;
+
+  // Polar curtains fade on the night side and as the camera aligns with the
+  // star, keeping them subordinate to the solar rim and glare.
+  float polarBand = smoothstep(0.72, 0.94, abs(normalize(vNormalLocal).y));
+  float polarNight = 1.0 - smoothstep(-0.2, 0.12, sunFacing);
+  float curtainWave = sin(atan(vNormalLocal.z, vNormalLocal.x) * 8.0 +
+    sin(vNormalLocal.x * uAuroraScale + uTime * uAuroraMotionRate) * 1.8 +
+    uTime * uAuroraMotionRate * 0.64);
+  float curtain = smoothstep(-0.36, 0.5, curtainWave) * (0.45 + 0.55 * abs(curtainWave));
+  float auroraAlignmentFade = 1.0 - smoothstep(0.55, 0.92, uViewSunAlignment);
+  float aurora = polarBand * polarNight * curtain * uAuroraStrength * auroraAlignmentFade;
+  finalScatter += vec3(0.055, 0.42, 0.31) * aurora;
+
+  gl_FragColor = vec4(finalScatter * uAtmosphereThickness, 1.0);
+#endif
 }
 `
 
