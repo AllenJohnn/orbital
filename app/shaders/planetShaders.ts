@@ -5,10 +5,17 @@ varying vec2 vUv;
 varying vec3 vNormalWorld;
 varying vec3 vNormalLocal;
 varying vec3 vPositionWorld;
+#ifdef APPROACH_PATCH
+uniform mat3 uTerrainTransform;
+#endif
 
 void main() {
   vUv = uv;
+  #ifdef APPROACH_PATCH
+  vNormalLocal = normalize(uTerrainTransform * normal);
+  #else
   vNormalLocal = normalize(normal);
+  #endif
   vNormalWorld = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
   vPositionWorld = (modelMatrix * vec4(position, 1.0)).xyz;
   gl_Position = projectionMatrix * viewMatrix * vec4(vPositionWorld, 1.0);
@@ -41,6 +48,21 @@ uniform float uGlintStrength;
 uniform float uCloudShadowStrength;
 uniform vec3 uMoonDirection;
 uniform float uEclipseStrength;
+uniform vec3 uApproachCenter;
+uniform float uApproachBlend;
+uniform float uApproachRadius;
+#ifdef APPROACH_PATCH
+uniform mat3 uTerrainTransform;
+uniform vec3 uPatchCenter;
+uniform float uPatchOpacity;
+uniform float uPatchAngularRadius;
+uniform float uPatchEdgeFade;
+uniform vec3 uApproachFogColor;
+uniform float uApproachFogNear;
+uniform float uApproachFogFar;
+uniform float uApproachFogStrength;
+uniform float uApproachDetailStrength;
+#endif
 varying vec2 vUv;
 varying vec3 vNormalWorld;
 varying vec3 vNormalLocal;
@@ -374,6 +396,13 @@ void main() {
   vec3 worldNormal = normalize(vNormalWorld);
   float detailDistanceFade = 1.0 - smoothstep(1800.0, 4200.0, distToCam);
   float fineDistanceFade = 1.0 - smoothstep(260.0, 950.0, distToCam);
+#ifndef APPROACH_PATCH
+  float approachAngleFromCenter = acos(clamp(dot(localNormal, normalize(uApproachCenter)), -1.0, 1.0));
+  float approachRegion = 1.0 - smoothstep(uApproachRadius - 0.07, uApproachRadius, approachAngleFromCenter);
+  float planetLodHandoff = 1.0 - uApproachBlend * approachRegion;
+  detailDistanceFade *= planetLodHandoff;
+  fineDistanceFade *= planetLodHandoff;
+#endif
   float fineHeight = snoise(localNormal * 84.0 + vec3(uTerrainSeed * 0.07)) *
     0.0016 * fineDistanceFade;
   float detailHeight = terrainFbm(localNormal * 22.0 + vec3(uTerrainSeed * 0.03)) *
@@ -388,6 +417,18 @@ void main() {
   float reliefFade = 1.0 - smoothstep(6500.0, 10000.0, distToCam);
   float terminatorBoost = 1.0 + 0.22 * exp(-pow(dot(worldNormal, sunDir) / 0.24, 2.0));
   vec3 finalNormal = normalize(mix(worldNormal, derivedNormal, clamp(reliefFade * terminatorBoost, 0.0, 1.0)));
+
+#ifdef APPROACH_PATCH
+  // Close-range tri-planar procedural grain uses the same seeded terrain
+  // coordinates as the globe and fades in with the approach patch.
+  vec3 triWeights = abs(worldNormal);
+  triWeights /= max(triWeights.x + triWeights.y + triWeights.z, 0.001);
+  float triX = snoise(localNormal.yzx * 360.0 + vec3(uTerrainSeed * 0.11));
+  float triY = snoise(localNormal.zxy * 360.0 + vec3(uTerrainSeed * 0.11));
+  float triZ = snoise(localNormal.xyz * 360.0 + vec3(uTerrainSeed * 0.11));
+  float microGrain = triX * triWeights.x + triY * triWeights.y + triZ * triWeights.z;
+  float closeDetailFade = clamp(uApproachDetailStrength * uPatchOpacity, 0.0, 1.0);
+#endif
 
   // --------------------------------------------------------
   // MACRO BIOME DISTRIBUTION (The Planetary DNA)
@@ -541,6 +582,11 @@ void main() {
     float landTexture = 1.0 + surfaceGrain * 0.085 + strataGrain * 0.035;
     albedo *= landTexture;
     albedo = mix(albedo, mix(uPalette2, uPalette3, mineralMask), mineralVein * 0.12 * (1.0 - isIce));
+#ifdef APPROACH_PATCH
+    float biomeDetail = isLand > 0.5 ? (isIce > 0.5 ? 0.018 : 0.07) : 0.035;
+    albedo *= 1.0 + microGrain * biomeDetail * closeDetailFade;
+    landSpec = mix(landSpec, min(0.46, landSpec + 0.025), closeDetailFade);
+#endif
     
     // Calculate land specular
     vec3 halfVector = normalize(sunDir + viewDir);
@@ -615,8 +661,18 @@ void main() {
 
   float peakChannel = max(max(finalColor.r, finalColor.g), finalColor.b);
   finalColor *= 1.0 / (1.0 + max(peakChannel - 0.72, 0.0) * 1.8);
+#ifdef APPROACH_PATCH
+  float patchAngle = acos(clamp(dot(localNormal, normalize(uPatchCenter)), -1.0, 1.0));
+  float patchEdge = 1.0 - smoothstep(uPatchAngularRadius - uPatchEdgeFade, uPatchAngularRadius, patchAngle);
+  float approachFog = smoothstep(uApproachFogNear, uApproachFogFar, distToCam) * uApproachFogStrength;
+  finalColor = mix(finalColor, uApproachFogColor, clamp(approachFog, 0.0, 0.52));
+  float patchAlpha = uPatchOpacity * patchEdge;
+  finalColor += vec3(tpdfDither(gl_FragCoord.xy));
+  gl_FragColor = vec4(finalColor, patchAlpha);
+#else
   finalColor += vec3(tpdfDither(gl_FragCoord.xy));
   gl_FragColor = vec4(finalColor, 1.0);
+#endif
 }
 `
 
